@@ -27,6 +27,7 @@ import inspect
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -76,13 +77,16 @@ def chat_completion(messages: list[dict], tools: list[dict] | None = None) -> di
 
 
 # ----------------------------------------------------------------------
-# 工具注册表：@tool 装饰器 + 自动生成 schema，扩展只需写普通函数
+# 工具注册表 + 执行白名单：@tool 装饰器 + 自动生成 schema，扩展只需写普通函数
 # ----------------------------------------------------------------------
 # 注册规则（由装饰器自动完成，无需手动填 JSON）：
 #   函数名        -> 工具名
 #   函数 docstring -> 工具描述（可选）
 #   参数的类型注解 -> parameters schema（必填）
+# 安全约束：@tool 注册时会同步加入"执行白名单"；不在白名单内的工具
+#   即使被模型点名也不会执行（run_tool 与权限层双重拦截）。
 _TOOL_REGISTRY: dict[str, callable] = {}
+_TOOL_WHITELIST: set[str] = set()
 
 
 def tool(func=None, *, name: str | None = None):
@@ -90,13 +94,14 @@ def tool(func=None, *, name: str | None = None):
 
     支持两种写法：@tool  或  @tool()  或  @tool(name="别名")
     函数需写参数类型注解（int/float/str/bool），并尽量写一句 docstring
-    作为工具描述。
+    作为工具描述。注册即入执行白名单。
     """
 
     def decorator(f):
         fname = name or f.__name__
         f._tool_name = fname  # 标记，供自动生成 schema 时识别
         _TOOL_REGISTRY[fname] = f
+        _TOOL_WHITELIST.add(fname)   # 同步加入执行白名单
         return f
 
     if func is not None:
@@ -150,8 +155,14 @@ def registered_tools() -> list[dict]:
 def run_tool(name: str, arguments: str) -> str:
     """按工具名分发执行注册的函数，返回 JSON 字符串结果。
 
+    执行前校验执行白名单：不在白名单内的工具一律不执行。
     以后加新工具：只要用 @tool 注册即可，这里无需再改。
     """
+    # 白名单校验：注册即入白名单，未入白名单的不执行
+    if name not in _TOOL_WHITELIST:
+        return json.dumps(
+            {"blocked": f"工具 {name} 不在执行白名单内，已拒绝执行。"}, ensure_ascii=False)
+
     func = _TOOL_REGISTRY.get(name)
     if func is None:
         return json.dumps({"error": f"未注册的工具：{name}"}, ensure_ascii=False)
@@ -420,6 +431,169 @@ def glob(pattern: str) -> str:
 
 
 # ----------------------------------------------------------------------
+# 权限校验层：所有工具调用在执行前都会经过这里
+# ----------------------------------------------------------------------
+# 决策模型（三级）：
+#   1. 危险操作  -> deny     直接拒绝，不询问（删根/格式化/关机/写系统目录等）
+#   2. 不确定    -> confirm  阻塞等待用户输入，按用户裁决放行或拒绝
+#   3. 无危害    -> allow    直接执行
+#
+# 判据来源：
+#   - 参数值里的危险命令关键字（bash 的 command、文件的 path）
+#   - 工具本身的风险等级（edit 必然覆盖、bash 不受控）
+#   - 写入目标是否已存在（write 覆盖已有文件属于破坏性操作）
+_VERDICT_DENY = "deny"
+_VERDICT_CONFIRM = "confirm"
+_VERDICT_ALLOW = "allow"
+
+# 危险 bash 命令：正则命中即直接拒绝
+_BASH_DENY_RE = re.compile(
+    r"\b(?:rm\s+-(?:rf|fr|r\s+f|f\s+r|r\s*[a-zA-Z])\s*[/.]?\s*$|"
+    r"rm\s+-(?:rf|fr|r)\s+[/]|rm\s+-rf\s+/?[a-zA-Z]:|rm\s+-rf\s+/\s*$|"
+    r"rm\s+-rf\s+/\s|sudo\s+rm\s+-rf\s+/\s*$|"
+    r"del\s+/[a-z]\s+[a-zA-Z]:|rmdir\s+/s\s+[a-zA-Z]:|"
+    r"format\s+[a-zA-Z]:|diskpart|fdisk|mkfs|shutdown|reboot|restart|"
+    r"reg\s+(?:delete|add)\s+HK|wget|curl|nc\s|telnet|nmap|hydra|dd\s+if=)",
+    re.IGNORECASE,
+)
+
+# 需要用户确认的 bash 命令（比 deny 低一档：有破坏性但不是致命）
+_BASH_CONFIRM_RE = re.compile(
+    r"\b(?:rm|mv|cp|del|mkdir|rmdir|git\s+push|git\s+reset|git\s+clean|"
+    r"git\s+rebase|git\s+fetch|git\s+pull|git\s+checkout\s+\.|"
+    r"pip\s+(?:install|uninstall)|npm\s+(?:install|uninstall)|"
+    r"apt-get|yum|dnf|brew\s+install)\b",
+    re.IGNORECASE,
+)
+
+# 明显无害的 bash 命令，直接放行（其余一律走 confirm，保持保守）
+_BASH_ALLOW_RE = re.compile(
+    r"^(?:ls|ls\s|pwd|echo\s|cat\s|head\s|tail\s|grep\s|find\s|"
+    r"which\s|whoami|python\s+--version|python3\s+--version|date|uname|"
+    r"git\s+status|git\s+log|git\s+diff\s|git\s+show\s|cd\s|"
+    r"sort\s|wc\s|uniq\s|env\b|set\b|hostname|wc\b)",
+    re.IGNORECASE,
+)
+
+# 写在 Windows 系统目录里的路径：直接拒绝（即使走的是 read/write/edit）
+_WINDOWS_SYS_DIRS = (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)")
+
+
+def _basename_lower(path: str) -> str:
+    """提取路径末尾的文件名并小写，便于按名识别命令。"""
+    return os.path.basename(path.rstrip("/\\")).lower()
+
+
+def _path_in_sysdir(path: str) -> bool:
+    """路径是否落在 Windows 系统目录内。"""
+    norm = os.path.normcase(os.path.normpath(os.path.abspath(path)))
+    return any(norm.startswith(os.path.normcase(d)) for d in _WINDOWS_SYS_DIRS)
+
+
+def _check_approval(tool_name: str, arguments: str) -> str:
+    """对一次工具调用做三级决策，返回 allow / confirm / deny。
+
+    tool_name  工具名
+    arguments  模型传入的原始参数 JSON 字符串（仅用于提取参数值做判据）
+    """
+    # ---- 第 0 级：不在执行白名单内 → 直接拒绝（不询问）----
+    if tool_name not in _TOOL_WHITELIST:
+        return _VERDICT_DENY
+
+    # ---- 第一级：危险操作，直接拒绝 ----
+    if tool_name == "bash":
+        cmd = _bash_command(arguments)
+        if cmd is None:
+            return _VERDICT_ALLOW   # 解析不到 command，交给 run_tool 的正常参数校验
+        if _BASH_DENY_RE.search(cmd):
+            return _VERDICT_DENY
+        if _path_in_sysdir(cmd) or _has_dangerous_path(cmd):
+            return _VERDICT_DENY
+
+    elif tool_name in ("read", "write", "edit", "glob"):
+        path = _file_path(arguments)
+        if path is not None and _path_in_sysdir(path):
+            return _VERDICT_DENY
+
+    # ---- 第二级：不确定/有破坏性，询问用户 ----
+    if tool_name == "bash":
+        if not _BASH_ALLOW_RE.match(cmd):
+            return _VERDICT_CONFIRM        # 不在白名单里的 bash 命令都要问
+        return _VERDICT_ALLOW
+    if tool_name == "write":
+        if _file_exists(arguments):
+            return _VERDICT_CONFIRM        # 覆盖已有文件 -> 问
+        return _VERDICT_ALLOW              # 新建文件 -> 放行
+    if tool_name == "edit":
+        return _VERDICT_CONFIRM            # 修改文件必然有破坏性 -> 问
+    if tool_name == "read":
+        return _VERDICT_ALLOW              # 读文件无害
+    if tool_name == "glob":
+        return _VERDICT_ALLOW              # 查找无害
+
+    # 其它工具（如 get_environment）：无害，直接放行
+    return _VERDICT_ALLOW
+
+
+def _bash_command(arguments: str) -> str | None:
+    """从参数 JSON 里提取 bash 的 command 字段。"""
+    try:
+        return json.loads(arguments).get("command")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def _file_path(arguments: str) -> str | None:
+    """从参数 JSON 里提取文件类工具的 path 字段。"""
+    try:
+        return json.loads(arguments).get("path")
+    except (json.JSONDecodeError, AttributeError):
+        return None
+
+
+def _file_exists(arguments: str) -> bool:
+    """write 的目标文件是否已存在（决定要不要询问）。"""
+    path = _file_path(arguments)
+    if not path:
+        return False
+    try:
+        return os.path.exists(os.path.abspath(path))
+    except (ValueError, OSError):
+        return False
+
+
+def _has_dangerous_path(cmd: str) -> bool:
+    """命令里是否包含对系统关键位置的写入/删除意图。"""
+    lowered = cmd.lower()
+    return any(d in lowered for d in (
+        r"c:\windows", r"c:\program files", "/etc/passwd", "/etc/shadow",
+        "~/.ssh", r"\\.\\", "rd /s", "format",
+    ))
+
+
+def _prompt_user(tool_name: str, arguments: str) -> bool:
+    """阻塞等待用户输入，决定是否放行一次"需确认"的调用。"""
+    cmd = _bash_command(arguments) if tool_name == "bash" else _file_path(arguments)
+    print(f"\n[权限] 工具 <{tool_name}> 需要你确认：{cmd}")
+    while True:
+        answer = input("      允许执行？(y=允许 / n=拒绝 / 其它=拒绝)：").strip().lower()
+        if answer in ("y", "yes"):
+            return True
+        if answer in ("n", "no", ""):
+            return False
+        print("      请输入 y 或 n。")
+
+
+def _describe_verdict(verdict: str, tool_name: str, arguments: str) -> str:
+    """把决策结果格式化为给模型的提示信息。"""
+    if verdict == _VERDICT_DENY:
+        return f"调用被安全策略拒绝（高风险操作）。不允许执行 {tool_name} 参数为 {arguments}。如需执行，请改为询问用户或换一个安全的做法。"
+    if verdict == _VERDICT_CONFIRM:
+        return "用户拒绝了该次操作，请勿重试，向用户说明你无法执行。"
+    return ""
+
+
+# ----------------------------------------------------------------------
 # Agent Loop 主循环
 # ----------------------------------------------------------------------
 def agent_loop(user_message: str, max_steps: int = 20) -> None:
@@ -451,7 +625,20 @@ def agent_loop(user_message: str, max_steps: int = 20) -> None:
             arguments = tool_call["function"]["arguments"]
             print(f"调用工具 <{tool_name}>，参数：{arguments}")
 
-            result = run_tool(tool_name, arguments)
+            # 执行前先过权限校验层
+            verdict = _check_approval(tool_name, arguments)
+            if verdict == _VERDICT_ALLOW:
+                result = run_tool(tool_name, arguments)
+            elif verdict == _VERDICT_CONFIRM:
+                if _prompt_user(tool_name, arguments):
+                    result = run_tool(tool_name, arguments)
+                else:
+                    result = json.dumps(
+                        {"blocked": "用户拒绝了该次操作，请勿重试。"}, ensure_ascii=False)
+            else:  # deny
+                result = json.dumps(
+                    {"blocked": _describe_verdict(verdict, tool_name, arguments)},
+                    ensure_ascii=False)
 
             messages.append(
                 {
