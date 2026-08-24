@@ -16,7 +16,20 @@
    - 返回 ("deny", 原因)：拒绝执行，原因会回给模型
    同一事件多个回调按 priority 升序执行；pre 的裁决取最高优先级
    （deny > confirm > allow）。
+
+标记输出：每次回调执行前打印 【事件名：方法名】，仅当环境变量
+AGENT_DEBUG 为真时输出（默认关闭）。
 """
+import os
+
+# 是否打印钩子调用标记。设 AGENT_DEBUG=1 开启调试日志。
+_DEBUG = os.environ.get("AGENT_DEBUG", "").lower() in ("1", "true", "yes", "on")
+
+
+def _log_hook(event: str, cb_name: str) -> None:
+    """输出钩子标记（调试模式）。"""
+    if _DEBUG:
+        print(f"【{event}：{cb_name}】")
 
 
 class HookContext:
@@ -67,7 +80,7 @@ class HookRegistry:
     def _run(self, event: str, ctx: HookContext) -> None:
         """顺序执行某事件的全部回调。"""
         for _, cb in self._handlers[event]:
-            print(f"【{event}：{cb.__name__}】")
+            _log_hook(event, cb.__name__)
             cb(ctx)
 
     def fire(self, event: str, ctx: HookContext) -> None:
@@ -78,7 +91,7 @@ class HookRegistry:
         """触发 pre_tool_execute，聚合所有回调的裁决（deny > confirm > allow）。"""
         ctx.verdict = None
         for _, cb in self._handlers[HookEvents.PRE_TOOL_EXECUTE]:
-            print(f"【{HookEvents.PRE_TOOL_EXECUTE}：{cb.__name__}】")
+            _log_hook(HookEvents.PRE_TOOL_EXECUTE, cb.__name__)
             result = cb(ctx)
             if result is None:
                 continue
