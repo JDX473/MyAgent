@@ -258,6 +258,24 @@ def _on_plan_stop_summary(ctx: HookContext) -> None:
         print(f"[计划] {rest}")
 
 
+def _on_plan_progress(ctx: HookContext) -> None:
+    """POST_TOOL_EXECUTE：计划工具执行后，把当前计划全貌打印到终端。
+
+    让用户能看到任务的拆解结果和每个 step 的实时进度，
+    而不是只看到"工具执行完毕"的字符数。
+    """
+    if ctx.tool_name not in _PLAN_TOOLS:
+        return
+    plan = ctx.state.get("plan")
+    if not plan:
+        return
+    print(f"\n--- 当前计划进度 ---")
+    print(planner.serialize_plan(plan))
+    if planner.plan_done(plan):
+        print("（计划已全部完成）")
+    print("--------------------")
+
+
 
 # ----------------------------------------------------------------------
 # 注册（import 本模块即生效）
@@ -266,6 +284,7 @@ hooks.register(HookEvents.PRE_TOOL_EXECUTE, _permission_check, priority=-100)
 hooks.register(HookEvents.POST_MODEL_RESPONSE, _on_model_response)
 hooks.register(HookEvents.POST_MODEL_RESPONSE, _on_plan_drift_counter)
 hooks.register(HookEvents.POST_TOOL_EXECUTE, _on_post_tool)
+hooks.register(HookEvents.POST_TOOL_EXECUTE, _on_plan_progress)
 hooks.register(HookEvents.PRE_MODEL_REQUEST, _on_plan_reminder)
 hooks.register(HookEvents.USER_PROMPT_SUBMIT, _on_plan_summary_at_submit)
 hooks.register(HookEvents.STOP, _on_stop_token_summary)

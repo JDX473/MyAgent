@@ -278,6 +278,41 @@ class TestDriftCounter(unittest.TestCase):
 # ----------------------------------------------------------------------
 # 5. loop 集成：防漂移提醒注入
 # ----------------------------------------------------------------------
+# ----------------------------------------------------------------------
+# 5. loop 集成：防漂移提醒注入
+# ----------------------------------------------------------------------
+class TestPlanProgressPrint(unittest.TestCase):
+    """计划工具执行后，POST_TOOL_EXECUTE 钩子应把当前计划打印到终端。"""
+
+    def test_plan_progress_printed_after_plan_tool(self):
+        from tools import hooks_setup as hs
+
+        ctx = HookContext()
+        ctx.state["plan"] = planner.new_plan(["读", "改"])
+        ctx.tool_name = "update_step"
+        # 让 step0 处于执行中，模拟一次状态更新
+        planner.apply_transition(ctx.state["plan"], 0, "in_progress")
+
+        with mock.patch("sys.stdout") as stdout:
+            hs._on_plan_progress(ctx)
+        # 打印里应包含当前计划的全貌（含 step 标题与状态）
+        printed = stdout.write.call_args_list
+        text = "".join(call[0][0] for call in printed if call and call[0])
+        self.assertIn("当前计划", text)
+        self.assertIn("读", text)
+        self.assertIn("改", text)
+
+    def test_plan_progress_ignores_non_plan_tool(self):
+        from tools import hooks_setup as hs
+
+        ctx = HookContext()
+        ctx.state["plan"] = planner.new_plan(["读"])
+        ctx.tool_name = "read"
+        with mock.patch("sys.stdout") as stdout:
+            hs._on_plan_progress(ctx)
+        self.assertEqual(stdout.write.call_count, 0)
+
+
 class TestLoopPlanReminder(unittest.TestCase):
     """mock chat_completion，脚本化模型行为，验证提醒在阈值后注入。"""
 

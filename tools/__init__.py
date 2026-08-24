@@ -8,6 +8,7 @@ from tools.file_tools import edit, glob, read, write
 from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）
     _on_model_response,
     _on_plan_drift_counter,
+    _on_plan_progress,
     _on_plan_reminder,
     _on_plan_stop_summary,
     _on_plan_summary_at_submit,
