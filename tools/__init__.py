@@ -1,0 +1,13 @@
+"""内置工具集合：统一 import 本包即完成所有工具的 @tool 注册。
+
+新增工具模块后，在这里加一行 import 即可被 Agent 使用。
+"""
+from tools.bash_tool import bash
+from tools.env_tool import get_environment
+from tools.file_tools import edit, glob, read, write
+from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）
+    _on_model_response,
+    _on_post_tool,
+    _on_stop_token_summary,
+    _permission_check,
+)

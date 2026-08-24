@@ -48,25 +48,33 @@
 
 ## 快速开始
 
-### 1. 设置环境变量
+### 1. 设置 API Key（二选一）
+
+**方式 A：环境变量**
 
 ```bash
 # Windows PowerShell
 $env:DEEPSEEK_API_KEY = "你的key"
 
-# 可选：切换模型（默认 deepseek-v4-flash）
-$env:DEEPSEEK_MODEL = "deepseek-v4-pro"   # 更强推理模型
-```
-
-```bash
 # Linux / macOS
 export DEEPSEEK_API_KEY="你的key"
 ```
 
+**方式 B：本地 .env 文件（推荐，已被 git 忽略）**
+
+在本项目目录创建 `.env`：
+
+```
+DEEPSEEK_API_KEY=你的key
+DEEPSEEK_MODEL=deepseek-v4-pro   # 可选：切换模型（默认 deepseek-v4-flash）
+```
+
+两者任一即可，同时存在时已设置的环境变量优先。
+
 ### 2. 运行
 
 ```bash
-python agent_loop.py
+python main.py
 ```
 
 程序会提示你输入问题，例如：
@@ -118,11 +126,21 @@ def add(a: int, b: int) -> int:
 
 ```
 MyAgent/
-├── agent_loop.py        # 主程序：Agent Loop 全部实现
-├── demo/
-│   └── hello.txt        # 示例工作文件（供 Agent 读写测试）
-├── README.md            # 本文件
-└── .gitignore           # 忽略 __pycache__ / *.pyc
+├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话
+├── config.py             # .env 加载 + API 常量
+├── core/                 # Agent 核心框架
+│   ├── llm.py            # DeepSeek REST 通信（chat_completion）
+│   ├── tools.py          # @tool 注册表 + 白名单 + schema + run_tool
+│   ├── hooks.py          # HookContext + HookRegistry + 单例 hooks
+│   └── loop.py           # agent_loop 主循环（钩子驱动）
+├── tools/                # 内置工具与钩子
+│   ├── __init__.py       # 统一 import 触发注册
+│   ├── bash_tool.py      # bash + Git Bash 探测
+│   ├── env_tool.py       # get_environment
+│   ├── file_tools.py     # read/write/edit/glob + _safe_path
+│   └── hooks_setup.py    # 权限钩子 + 示例钩子 + 注册
+├── README.md             # 本文件
+└── .gitignore            # 忽略 __pycache__ / *.pyc / .env
 ```
 
 > `_WORK_DIR` 即启动脚本时的当前工作目录（`os.getcwd()`），
@@ -132,14 +150,17 @@ MyAgent/
 
 | 模块 / 函数 | 职责 |
 | --- | --- |
-| `chat_completion()` | 封装 DeepSeek 原生 `/chat/completions` 请求 |
-| `@tool` / `_TOOL_REGISTRY` | 装饰器与工具注册表 |
-| `generate_tool_schema()` | 由函数注解自动生成 tools 声明 |
-| `run_tool()` | 按工具名分发执行，返回 JSON 字符串 |
-| `bash` / `get_environment` | 系统类示例工具 |
-| `read` / `write` / `edit` / `glob` | 文件类示例工具（带 `_safe_path` 路径校验） |
-| `agent_loop()` | 主循环：对话 → 决策 → 执行工具 → 回填历史 |
-| `__main__` | 环境变量检查 + 交互式输入入口 |
+| `core/llm.py` `chat_completion()` | 封装 DeepSeek 原生 `/chat/completions` 请求 |
+| `core/tools.py` `@tool` / `_TOOL_REGISTRY` | 装饰器与工具注册表（注册即入白名单） |
+| `core/tools.py` `generate_tool_schema()` | 由函数注解自动生成 tools 声明 |
+| `core/tools.py` `run_tool()` | 按工具名分发执行，返回 JSON 字符串 |
+| `core/hooks.py` | HookContext / HookRegistry / 事件定义 |
+| `core/loop.py` `agent_loop()` | 主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
+| `tools/bash_tool.py` `bash` | 执行 shell 命令（Git Bash → cmd.exe 回退） |
+| `tools/env_tool.py` `get_environment` | 环境诊断 |
+| `tools/file_tools.py` `read/write/edit/glob` | 文件读写改查（带 `_safe_path` 路径校验） |
+| `tools/hooks_setup.py` `_permission_check` | 权限钩子：危险操作 deny / 需确认 confirm / 无害 allow |
+| `main.py` | 环境变量检查 + 交互式输入入口 |
 
 ## 注意事项
 
