@@ -39,7 +39,12 @@
 循环终止条件：
 
 1. 模型本轮回复**不包含** `tool_calls` → 输出最终答案，结束；
-2. 达到最大轮数 `max_steps`（默认 20）→ 停止并提示。
+2. 达到单段轮数上限（`AGENT_MAX_STEPS`，默认 20）→ 若任务有计划且未完成，
+   自动注入"自动续跑"提醒继续下一段，直到计划完成或达到总硬上限
+   （`AGENT_MAX_TOTAL_STEPS` 段，默认 3 段 = 60 轮；设 0 关闭自动续跑）。
+
+> 无活跃计划时，单段上限即硬上限，用尽即停。`20` 限制的是"一条用户消息"，
+> 跨多条消息的长任务每条消息都重新获得单段预算。
 
 ## 环境要求
 
@@ -94,6 +99,8 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `DEEPSEEK_API_KEY` | （必填） | DeepSeek API 密钥 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 使用的模型名 |
 | `BOCHA_API_KEY` | （websearch 需要） | 博查搜索 API 密钥（https://open.bocha.cn） |
+| `AGENT_MAX_STEPS` | `20` | 每条用户消息的单段轮数预算 |
+| `AGENT_MAX_TOTAL_STEPS` | `3` | 自动续跑段数（总硬上限 = 单段预算 × 段数；设 `0` 关闭自动续跑） |
 
 > ⚠️ 注意：`deepseek-v4-pro` 的 thinking 推理模式**不保证支持函数调用**，
 > 做 Agent Loop 时请使用默认的非思考模式，需要工具调用时不要开启 thinking。

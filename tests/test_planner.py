@@ -375,5 +375,105 @@ class TestLoopPlanReminder(unittest.TestCase):
         self.assertNotIn("防漂移提醒", all_content)
 
 
+# ----------------------------------------------------------------------
+# 6. 自动续跑：单段预算用尽但计划未完成 → 注入提醒继续
+# ----------------------------------------------------------------------
+class TestLoopAutoContinue(unittest.TestCase):
+    """mock chat_completion，验证自动续跑与总硬上限。"""
+
+    def _run_session(self, calls, max_steps, env=None):
+        """跑一个脚本化会话，返回 (answer, seen_messages)。"""
+        from core import loop as loop_mod
+        import os
+
+        seen = []
+        call_idx = [0]
+
+        def fake_chat(messages, tools=None):
+            seen.append([dict(m) for m in messages])
+            i = call_idx[0]
+            call_idx[0] += 1
+            tc = calls[i] if i < len(calls) else None
+            if tc is None:
+                return {"choices": [{"message": {"role": "assistant", "content": "全部完成"}}]}
+            return {"choices": [{"message": {"role": "assistant", "content": "", "tool_calls": [tc]}}]}
+
+        env = env or {}
+        with mock.patch.dict(os.environ, env), \
+             mock.patch.object(loop_mod, "chat_completion", side_effect=fake_chat):
+            session = loop_mod.AgentSession()
+            answer = session.chat("跑完计划", max_steps=max_steps)
+        return answer, seen
+
+    def test_auto_continue_when_plan_incomplete(self):
+        # 单段 3 轮：plan_task + 2 个非计划工具，用完第 1 段
+        calls = [
+            _tool_call("plan_task", {"steps": ["a", "b", "c"]}, cid="p"),
+            _tool_call("get_environment", {}, cid="g1"),
+            _tool_call("get_environment", {}, cid="g2"),
+            # 第 2 段开始（自动续跑注入后）
+            _tool_call("get_environment", {}, cid="g3"),
+            _tool_call("update_step", {"step_index": 0, "status": "done", "note": "ok"}, cid="u"),
+            None,  # 最终回答
+        ]
+        answer, seen = self._run_session(calls, max_steps=3, env={"AGENT_MAX_STEPS": "3"})
+        self.assertEqual(answer, "全部完成")
+        # 总调用数 > 单段预算 3 → 确实续跑了
+        self.assertEqual(len(seen), 6)
+        # 第 2 段起的某次请求里带着"自动续跑"提醒
+        auto = any(
+            any(m.get("role") == "system" and "自动续跑" in m.get("content", "") for m in msgs)
+            for msgs in seen
+        )
+        self.assertTrue(auto, "自动续跑提醒未被注入")
+
+    def test_no_auto_continue_without_plan(self):
+        # 没有计划：单段用尽即停，不续跑
+        calls = [
+            _tool_call("get_environment", {}, cid="g1"),
+            _tool_call("get_environment", {}, cid="g2"),
+            _tool_call("get_environment", {}, cid="g3"),  # 若续跑会用到
+        ]
+        answer, seen = self._run_session(calls, max_steps=2, env={"AGENT_MAX_STEPS": "2"})
+        self.assertEqual(answer, "")
+        self.assertEqual(len(seen), 2)  # 只跑单段，未续跑
+        all_content = " ".join(
+            m.get("content", "") for msgs in seen for m in msgs if m.get("role") == "system"
+        )
+        self.assertNotIn("自动续跑", all_content)
+
+    def test_auto_continue_hard_cap(self):
+        # 一直调用工具（永不结束）：总硬上限 = 单段 × 段数 = 2 × 2 = 4
+        calls = [
+            _tool_call("plan_task", {"steps": ["a"]}, cid="p"),
+            _tool_call("get_environment", {}, cid="g1"),
+            _tool_call("get_environment", {}, cid="g2"),
+            _tool_call("get_environment", {}, cid="g3"),
+            _tool_call("get_environment", {}, cid="g4"),  # 若超上限会用到
+        ]
+        answer, seen = self._run_session(
+            calls, max_steps=2,
+            env={"AGENT_MAX_STEPS": "2", "AGENT_MAX_TOTAL_STEPS": "2"})
+        self.assertEqual(answer, "")  # 顶到硬上限
+        self.assertEqual(len(seen), 4)  # 恰好 4 轮 = 硬上限，未突破
+
+    def test_auto_continue_disabled(self):
+        # AGENT_MAX_TOTAL_STEPS=0 → 关闭自动续跑，单段即上限
+        calls = [
+            _tool_call("plan_task", {"steps": ["a"]}, cid="p"),
+            _tool_call("get_environment", {}, cid="g1"),
+            _tool_call("get_environment", {}, cid="g2"),
+        ]
+        answer, seen = self._run_session(
+            calls, max_steps=2,
+            env={"AGENT_MAX_STEPS": "2", "AGENT_MAX_TOTAL_STEPS": "0"})
+        self.assertEqual(answer, "")
+        self.assertEqual(len(seen), 2)  # 只跑单段
+        all_content = " ".join(
+            m.get("content", "") for msgs in seen for m in msgs if m.get("role") == "system"
+        )
+        self.assertNotIn("自动续跑", all_content)
+
+
 if __name__ == "__main__":
     unittest.main()
