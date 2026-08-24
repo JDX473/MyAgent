@@ -61,7 +61,13 @@ class TestSchemaGeneration(unittest.TestCase):
         self.assertEqual(tools._type_to_json(float), "number")
         self.assertEqual(tools._type_to_json(str), "string")
         self.assertEqual(tools._type_to_json(bool), "boolean")
-        self.assertEqual(tools._type_to_json(list), "string")  # 未知类型兜底 string
+        self.assertEqual(tools._type_to_json(list), "string")  # 裸 list 兜底 string
+        from typing import List
+        # list[str] 应映射为字符串数组 schema
+        self.assertEqual(
+            tools._type_to_json(List[str]),
+            {"type": "array", "items": {"type": "string"}},
+        )
 
 
 class TestRunTool(unittest.TestCase):

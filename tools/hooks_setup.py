@@ -7,6 +7,7 @@ import json
 import os
 import re
 
+from core import planner
 from core.hooks import HookContext, HookEvents, hooks
 from core.tools import _TOOL_WHITELIST
 
@@ -55,6 +56,10 @@ _BASH_ALLOW_RE = re.compile(
 
 # 写在 Windows 系统目录里的路径：直接拒绝（即使走的是 read/write/edit）
 _WINDOWS_SYS_DIRS = (r"C:\Windows", r"C:\Program Files", r"C:\Program Files (x86)")
+
+# 计划工具：纯内存状态更新，无破坏性，直接放行（不弹确认，避免每次 step
+# 更新都阻塞 stdin 等用户输入，headless 场景下也会挂死）
+_PLAN_TOOLS = ("plan_task", "update_step", "revise_plan", "get_plan")
 
 
 def _path_in_sysdir(path: str) -> bool:
@@ -148,6 +153,8 @@ def _permission_check(ctx: HookContext) -> None | str | tuple[str, str]:
         return None           # 查找无害
     if tool_name == "websearch":
         return None           # 受控的联网搜索（只读，走博查 API），放行
+    if tool_name in _PLAN_TOOLS:
+        return None           # 计划/状态更新：纯内存操作，无破坏性，放行
 
     # 其它工具（如 get_environment）：无害，直接放行
     return None
@@ -177,9 +184,89 @@ def _on_stop_token_summary(ctx: HookContext) -> None:
 
 
 # ----------------------------------------------------------------------
+# 任务计划钩子：防目标漂移（拆分 step + 状态跟踪 + 定期提醒）
+# ----------------------------------------------------------------------
+def _tool_calls_from(ctx: HookContext) -> list[dict]:
+    """本轮模型响应里的 tool_calls（可能为空）。"""
+    if not ctx.messages:
+        return []
+    last = ctx.messages[-1]
+    return last.get("tool_calls") or []
+
+
+def _did_plan_work(ctx: HookContext) -> bool:
+    """本轮模型是否调用了计划相关工具（统计是否推进了计划）。"""
+    names = [tc["function"]["name"] for tc in _tool_calls_from(ctx)]
+    return any(n in _PLAN_TOOLS for n in names)
+
+
+def _on_plan_drift_counter(ctx: HookContext) -> None:
+    """POST_MODEL_RESPONSE：统计"多久没推进计划了"。
+
+    只有活跃计划存在且本轮没调用任何计划工具时才递增；
+    一旦调用了计划工具就清零（计划本身是最强提醒）。
+    """
+    if "plan" not in ctx.state:
+        return
+    if _did_plan_work(ctx):
+        ctx.state["plan_drift"] = 0
+    else:
+        ctx.state["plan_drift"] = ctx.state.get("plan_drift", 0) + 1
+
+
+def _on_plan_reminder(ctx: HookContext) -> None:
+    """PRE_MODEL_REQUEST：计划活跃且长时间未推进时，注入紧凑提醒。
+
+    阈值 6 轮：一个合法长 step 本身就要跨好几轮工具操作，
+    阈值太低会误报。注入后计数清零（防止每轮刷屏）。
+    """
+    plan = ctx.state.get("plan")
+    if not plan:
+        return
+    if ctx.state.get("plan_drift", 0) < 6:
+        return
+    # 注入紧凑计划快照（system 角色，避免被当成新的用户请求）
+    summary = planner.serialize_plan(plan, compact=True)
+    if summary:
+        ctx.messages.append({
+            "role": "system",
+            "content": f"（防漂移提醒）请回到当前任务计划，继续执行下一步：\n{summary}",
+        })
+    ctx.state["plan_drift"] = 0  # 每轮最多提醒一次，避免刷屏
+
+
+def _on_plan_summary_at_submit(ctx: HookContext) -> None:
+    """USER_PROMPT_SUBMIT：每轮用户输入前注入计划摘要，便于"继续/改一下"。"""
+    plan = ctx.state.get("plan")
+    if not plan:
+        return
+    summary = planner.serialize_plan(plan, compact=True)
+    if summary:
+        ctx.messages.append({
+            "role": "system",
+            "content": f"（当前任务计划）\n{summary}\n请基于此计划继续。",
+        })
+
+
+def _on_plan_stop_summary(ctx: HookContext) -> None:
+    """STOP：循环结束时，若计划未完成则提示，避免静默半途而废。"""
+    plan = ctx.state.get("plan")
+    if not plan or planner.plan_done(plan):
+        return
+    rest = planner.summarize_incomplete(plan)
+    if rest:
+        print(f"[计划] {rest}")
+
+
+
+# ----------------------------------------------------------------------
 # 注册（import 本模块即生效）
 # ----------------------------------------------------------------------
 hooks.register(HookEvents.PRE_TOOL_EXECUTE, _permission_check, priority=-100)
 hooks.register(HookEvents.POST_MODEL_RESPONSE, _on_model_response)
+hooks.register(HookEvents.POST_MODEL_RESPONSE, _on_plan_drift_counter)
 hooks.register(HookEvents.POST_TOOL_EXECUTE, _on_post_tool)
+hooks.register(HookEvents.PRE_MODEL_REQUEST, _on_plan_reminder)
+hooks.register(HookEvents.USER_PROMPT_SUBMIT, _on_plan_summary_at_submit)
 hooks.register(HookEvents.STOP, _on_stop_token_summary)
+hooks.register(HookEvents.STOP, _on_plan_stop_summary)

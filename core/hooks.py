@@ -1,7 +1,8 @@
 """Hook 事件系统：把 Loop 的生命周期抽象成可插拔的钩子。
 
-固定的 5 个事件点（Loop 主体不再改动）：
+固定的 6 个事件点（Loop 主体不再改动）：
    USER_PROMPT_SUBMIT  用户输入提交后、首轮请求前
+   PRE_MODEL_REQUEST   每次调用模型前（可注入上下文，如计划快照提醒）
    POST_MODEL_RESPONSE 模型每轮响应后（无论是否调用工具）
    PRE_TOOL_EXECUTE    工具执行前（可拦截/询问，见 HookContext.verdict）
    POST_TOOL_EXECUTE   工具执行后（拿到工具返回结果）
@@ -52,6 +53,7 @@ class HookContext:
 # 钩子事件名
 class HookEvents:
     USER_PROMPT_SUBMIT = "user_prompt_submit"
+    PRE_MODEL_REQUEST = "pre_model_request"
     POST_MODEL_RESPONSE = "post_model_response"
     PRE_TOOL_EXECUTE = "pre_tool_execute"
     POST_TOOL_EXECUTE = "post_tool_execute"
@@ -64,6 +66,7 @@ class HookRegistry:
     def __init__(self) -> None:
         self._handlers: dict[str, list[tuple[int, callable]]] = {
             HookEvents.USER_PROMPT_SUBMIT: [],
+            HookEvents.PRE_MODEL_REQUEST: [],
             HookEvents.POST_MODEL_RESPONSE: [],
             HookEvents.PRE_TOOL_EXECUTE: [],
             HookEvents.POST_TOOL_EXECUTE: [],

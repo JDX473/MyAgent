@@ -7,8 +7,13 @@ from tools.env_tool import get_environment
 from tools.file_tools import edit, glob, read, write
 from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）
     _on_model_response,
+    _on_plan_drift_counter,
+    _on_plan_reminder,
+    _on_plan_stop_summary,
+    _on_plan_summary_at_submit,
     _on_post_tool,
     _on_stop_token_summary,
     _permission_check,
 )
+from tools.planner_tools import get_plan, plan_task, revise_plan, update_step
 from tools.websearch_tool import websearch

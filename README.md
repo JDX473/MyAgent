@@ -13,9 +13,10 @@
 - 🛠 **装饰器式工具注册**：用 `@tool` 一行即可注册新工具，自动生成 JSON Schema
 - 📄 **自动 schema 生成**：根据函数的类型注解（`int/float/str/bool`）与 docstring 自动生成
   `tools` 声明，无需手写 JSON
-- 🖥 **内置 6 个开箱即用的工具**：bash、环境诊断、文件读写改查
+- 🖥 **内置 11 个开箱即用的工具**：bash、环境诊断、文件读写改查、联网搜索、任务计划
 - 🔒 **路径安全限制**：文件工具只允许在工作目录内操作，防止越权访问系统其它位置
 - 📊 **Token 用量打印**：每轮输出输入/输出 token 数，便于观察消耗
+- 🗂 **任务计划与防漂移**：多步任务可拆分为 step 并跟踪状态，长时间未推进计划时自动注入提醒，防止目标漂移
 
 ## 工作原理（Agent Loop）
 
@@ -108,6 +109,27 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `edit(path, old, new)` | 将文件中第一处 `old` 替换为 `new` |
 | `glob(pattern)` | 按通配符查找文件/目录（支持 `*` `**` `?` `[abc]`，最多返回 100 条） |
 | `websearch(query, count)` | 联网搜索，返回标题/链接/摘要（基于博查 API，需 `BOCHA_API_KEY`） |
+| `plan_task(steps)` | 把多步骤任务拆分为 step 列表，创建/替换当前任务计划 |
+| `update_step(step_index, status, note, reason)` | 更新某个 step 的状态（未执行/执行中/执行完成/执行失败/跳过），系统强制校验转移合法性 |
+| `revise_plan(steps)` | 整体修订计划：新增 / 删除 / 重排 step |
+| `get_plan()` | 查看当前计划各 step 的状态与说明 |
+
+### 任务计划与防目标漂移
+
+多步任务执行时，模型可先调用 `plan_task` 把任务拆成 step，再逐步执行：
+
+- **五态跟踪**：`未执行 → 执行中 → 执行完成 / 执行失败 / 跳过`，系统在 `update_step`
+  中强制校验转移合法性——不允许跳步、不允许同时推进多个 step、"执行完成"必须带
+  说明、执行失败必须带原因，防止模型"假完成"。
+- **顺序推进**：只有当前 step 终结后才允许推进下一个（顺序前沿）。
+- **防漂移提醒**：计划活跃期间，若连续 6 轮模型调用都没推进计划，
+  循环会在下次请求前自动注入一条紧凑计划快照提醒，把模型拉回任务主线；
+  每轮用户输入前也会注入当前计划摘要，便于"继续 / 还差什么"这类追问。
+- **重试上限**：单个 step 最多重试 3 次，之后只能跳过、失败或修订计划。
+- **生命周期**：计划挂在会话状态上，`/clear` 会自动丢弃。
+
+> 计划工具是纯内存操作、无破坏性，权限层直接放行（不弹确认）。
+> 单步即可完成的任务不需要规划——是否拆解由模型自行判断。
 
 ## 如何扩展新工具
 
@@ -135,13 +157,16 @@ MyAgent/
 │   ├── llm.py            # DeepSeek REST 通信（chat_completion）
 │   ├── tools.py          # @tool 注册表 + 白名单 + schema + run_tool
 │   ├── hooks.py          # HookContext + HookRegistry + 单例 hooks
+│   ├── planner.py        # 任务计划状态机（纯函数）
 │   └── loop.py           # agent_loop 主循环（钩子驱动）
 ├── tools/                # 内置工具与钩子
 │   ├── __init__.py       # 统一 import 触发注册
 │   ├── bash_tool.py      # bash + Git Bash 探测
 │   ├── env_tool.py       # get_environment
 │   ├── file_tools.py     # read/write/edit/glob + _safe_path
-│   └── hooks_setup.py    # 权限钩子 + 示例钩子 + 注册
+│   ├── planner_tools.py  # plan_task/update_step/revise_plan/get_plan
+│   ├── websearch_tool.py # websearch（博查 API）
+│   └── hooks_setup.py    # 权限钩子 + 示例钩子 + 计划钩子 + 注册
 ├── README.md             # 本文件
 └── .gitignore            # 忽略 __pycache__ / *.pyc / .env
 ```
@@ -158,10 +183,12 @@ MyAgent/
 | `core/tools.py` `generate_tool_schema()` | 由函数注解自动生成 tools 声明 |
 | `core/tools.py` `run_tool()` | 按工具名分发执行，返回 JSON 字符串 |
 | `core/hooks.py` | HookContext / HookRegistry / 事件定义 |
+| `core/planner.py` | 任务计划状态机：五态转移校验、序列化、修订（纯函数） |
 | `core/loop.py` `agent_loop()` | 主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
 | `tools/bash_tool.py` `bash` | 执行 shell 命令（Git Bash → cmd.exe 回退） |
 | `tools/env_tool.py` `get_environment` | 环境诊断 |
 | `tools/file_tools.py` `read/write/edit/glob` | 文件读写改查（带 `_safe_path` 路径校验） |
+| `tools/planner_tools.py` `plan_task` 等 | 计划拆分 / 状态更新 / 修订 / 查询 |
 | `tools/hooks_setup.py` `_permission_check` | 权限钩子：危险操作 deny / 需确认 confirm / 无害 allow |
 | `main.py` | 环境变量检查 + 交互式输入入口 |
 

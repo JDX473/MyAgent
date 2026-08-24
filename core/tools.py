@@ -35,8 +35,17 @@ def tool(func=None, *, name: str | None = None):
     return decorator           # @tool() 或 @tool(name=...) 形式
 
 
-def _type_to_json(t: type) -> str:
-    """把 Python 类型映射为 JSON Schema 类型。"""
+def _type_to_json(t: type) -> str | dict:
+    """把 Python 类型映射为 JSON Schema 的类型描述。
+
+    返回 str（如 "string"）或 dict（如 {"type": "array", "items": ...}）。
+    支持 int/float/str/bool 及 list[str]；其它类型兜底为 string。
+    """
+    if t == list:
+        return "string"  # 裸 list（元素类型未知）兜底
+    origin = getattr(t, "__origin__", None)
+    if origin is list:
+        return {"type": "array", "items": {"type": _type_to_json(t.__args__[0])}}
     return {
         int: "integer",
         float: "number",
@@ -54,7 +63,11 @@ def generate_tool_schema(func) -> dict:
     properties = {}
     required = []
     for param_name, t in hints.items():
-        properties[param_name] = {"type": _type_to_json(t)}
+        type_desc = _type_to_json(t)
+        if isinstance(type_desc, dict):
+            properties[param_name] = type_desc
+        else:
+            properties[param_name] = {"type": type_desc}
         required.append(param_name)
 
     description = (inspect.getdoc(func) or "").strip()

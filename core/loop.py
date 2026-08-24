@@ -10,6 +10,7 @@
 from core.hooks import HookContext, HookEvents, hooks
 from core.llm import chat_completion
 from core.tools import registered_tools, run_tool
+from tools import planner_tools
 
 DEFAULT_SYSTEM_PROMPT = "你是一个有用的助手。当需要访问本地环境或执行命令时，请调用可用的工具。"
 
@@ -50,6 +51,8 @@ class AgentSession:
 
         for step in range(1, max_steps + 1):
             print(f"\n===== 第 {step} 轮 =====")
+            # 每次调用模型前：钩子可注入上下文（如计划快照提醒，防目标漂移）
+            hooks.fire(HookEvents.PRE_MODEL_REQUEST, ctx)
             data = chat_completion(messages, tools=registered_tools())
 
             message = data["choices"][0]["message"]
@@ -81,6 +84,8 @@ class AgentSession:
 
                 ctx.tool_name = tool_name
                 ctx.arguments = arguments
+                # 计划工具需要读写 ctx.state：每次执行前绑定当前上下文
+                planner_tools.bind(ctx)
 
                 # 工具执行前：钩子裁决（deny > confirm > allow）
                 hooks.fire_pre_tool(ctx)
