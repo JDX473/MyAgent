@@ -13,7 +13,8 @@
   4. 模型不再请求调用工具时，循环结束
 
 运行前提：
-  设置环境变量 DEEPSEEK_API_KEY（在 https://platform.deepseek.com 申请）。
+  设置环境变量 DEEPSEEK_API_KEY（在 https://platform.deepseek.com 申请），
+  或在本目录的 .env 文件中配置（两者任一即可，已设置的环境变量优先）。
   可选 DEEPSEEK_MODEL，默认 deepseek-v4-flash。
   仅用 Python 标准库，无需 pip install 任何东西。
 
@@ -21,7 +22,6 @@
   python agent_loop.py
 """
 
-import glob as glob_module
 import glob as glob_module
 import inspect
 import json
@@ -38,6 +38,41 @@ from typing import get_type_hints
 # ----------------------------------------------------------------------
 # 配置：原生接口，模型用 DeepSeek 当前正式命名（v4 系列）
 # ----------------------------------------------------------------------
+_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+
+def load_env_file() -> None:
+    """加载项目目录下的 .env 文件到 os.environ。
+
+    规则：
+      - .env 文件不存在则静默跳过；
+      - 已设置的环境变量优先（不覆盖 os.environ 已有值）；
+      - .env 中未设置的值作为兜底写入 os.environ。
+      解析格式：每行 KEY=VALUE（# 开头为注释，值可带引号）。
+    """
+    if not os.path.isfile(_ENV_FILE):
+        return
+    try:
+        with open(_ENV_FILE, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+                # 去掉值两端的成对引号
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                    value = value[1:-1]
+                # 已存在的环境变量优先，不覆盖
+                if key and key not in os.environ:
+                    os.environ[key] = value
+    except OSError:
+        pass
+
+
+load_env_file()
+
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 BASE_URL = "https://api.deepseek.com"
@@ -173,6 +208,106 @@ def run_tool(name: str, arguments: str) -> str:
         return json.dumps({"result": result}, ensure_ascii=False)
     except TypeError as e:
         return json.dumps({"error": f"参数不匹配：{e}"}, ensure_ascii=False)
+
+
+# ----------------------------------------------------------------------
+# Hook 事件系统：把 Loop 的生命周期抽象成可插拔的钩子
+# ----------------------------------------------------------------------
+# 固定的 5 个事件点（Hooks 枚举），Loop 主体不再改动：
+#   USER_PROMPT_SUBMIT  用户输入提交后、首轮请求前
+#   POST_MODEL_RESPONSE 模型每轮响应后（无论是否调用工具）
+#   PRE_TOOL_EXECUTE    工具执行前（可拦截/询问，见 HookContext.verdict）
+#   POST_TOOL_EXECUTE   工具执行后（拿到工具返回结果）
+#   STOP                循环结束时（无论正常返回还是达到上限）
+#
+# 用法：
+#   hooks.register(Hooks.PRE_TOOL_EXECUTE, callback, priority=0)
+#   callback(ctx: HookContext) -> None | "allow" | "confirm" | ("deny", 原因)
+#   - 返回 None：视为 allow（继续）
+#   - 返回 "allow"：继续
+#   - 返回 "confirm"：标记需要用户确认
+#   - 返回 ("deny", 原因)：拒绝执行，原因会回给模型
+#   同一事件多个回调按 priority 升序执行；pre 的裁决取最高优先级
+#   （deny > confirm > allow）。
+class HookContext:
+    """一次工具调用 / 一个生命周期事件内，钩子间共享的上下文。"""
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []   # 当前对话的完整消息历史
+        self.tool_name: str = ""         # 本次要调用的工具名（pre/post tool）
+        self.arguments: str = ""         # 模型传来的参数 JSON 字符串（pre/post tool）
+        self.result: str = ""            # 工具执行后的 JSON 结果字符串（post tool）
+        self.verdict: str | None = None  # pre 钩子的裁决：allow / confirm / deny
+        self.deny_reason: str = ""       # deny 时的原因说明
+        self.state: dict = {}            # 任意共享状态（跨钩子、跨轮次）
+
+    def deny(self, reason: str) -> tuple[str, str]:
+        """便捷方法：返回 ("deny", reason)。"""
+        return ("deny", reason)
+
+
+# 钩子事件名
+HOOK_USER_PROMPT_SUBMIT = "user_prompt_submit"
+HOOK_POST_MODEL_RESPONSE = "post_model_response"
+HOOK_PRE_TOOL_EXECUTE = "pre_tool_execute"
+HOOK_POST_TOOL_EXECUTE = "post_tool_execute"
+HOOK_STOP = "stop"
+
+
+class HookRegistry:
+    """按事件名注册/触发钩子回调。"""
+
+    def __init__(self) -> None:
+        self._handlers: dict[str, list[tuple[int, callable]]] = {
+            HOOK_USER_PROMPT_SUBMIT: [],
+            HOOK_POST_MODEL_RESPONSE: [],
+            HOOK_PRE_TOOL_EXECUTE: [],
+            HOOK_POST_TOOL_EXECUTE: [],
+            HOOK_STOP: [],
+        }
+
+    def register(self, event: str, callback: callable, priority: int = 0) -> None:
+        """注册一个钩子。priority 越小越先执行（同事件内）。"""
+        if event not in self._handlers:
+            raise ValueError(f"未知事件：{event}")
+        self._handlers[event].append((priority, callback))
+        self._handlers[event].sort(key=lambda p: p[0])
+
+    def _run(self, event: str, ctx: HookContext) -> None:
+        """顺序执行某事件的全部回调。"""
+        for _, cb in self._handlers[event]:
+            print(f"【{event}：{cb.__name__}】")
+            cb(ctx)
+
+    def fire(self, event: str, ctx: HookContext) -> None:
+        """触发一个非工具事件（user_prompt_submit / post_model_response / stop）。"""
+        self._run(event, ctx)
+
+    def fire_pre_tool(self, ctx: HookContext) -> None:
+        """触发 pre_tool_execute，聚合所有回调的裁决（deny > confirm > allow）。"""
+        ctx.verdict = None
+        for _, cb in self._handlers[HOOK_PRE_TOOL_EXECUTE]:
+            print(f"【{HOOK_PRE_TOOL_EXECUTE}：{cb.__name__}】")
+            result = cb(ctx)
+            if result is None:
+                continue
+            if result == "allow":
+                if ctx.verdict is None:
+                    ctx.verdict = "allow"
+            elif result == "confirm":
+                ctx.verdict = "confirm"
+            elif isinstance(result, tuple) and result[0] == "deny":
+                ctx.verdict = "deny"
+                ctx.deny_reason = result[1]
+                break  # deny 最高优先级，直接短路
+        ctx.verdict = ctx.verdict or "allow"
+
+    def fire_post_tool(self, ctx: HookContext) -> None:
+        """触发 post_tool_execute。"""
+        self._run(HOOK_POST_TOOL_EXECUTE, ctx)
+
+
+hooks = HookRegistry()
 
 
 # ----------------------------------------------------------------------
@@ -490,49 +625,56 @@ def _path_in_sysdir(path: str) -> bool:
     return any(norm.startswith(os.path.normcase(d)) for d in _WINDOWS_SYS_DIRS)
 
 
-def _check_approval(tool_name: str, arguments: str) -> str:
-    """对一次工具调用做三级决策，返回 allow / confirm / deny。
+def _permission_check(ctx) -> None | str | tuple[str, str]:
+    """权限校验钩子（pre_tool_execute 回调）。
 
-    tool_name  工具名
-    arguments  模型传入的原始参数 JSON 字符串（仅用于提取参数值做判据）
+    决策模型（三级）：
+      1. 危险操作  -> deny     直接拒绝，不询问（删根/格式化/关机/写系统目录等）
+      2. 不确定    -> confirm  阻塞等待用户输入，按用户裁决放行或拒绝
+      3. 无危害    -> allow    直接执行
+
+    返回 None 表示放行（无拦截）；返回 "confirm" / ("deny", 原因) 则拦截。
     """
+    tool_name = ctx.tool_name
+    arguments = ctx.arguments
+
     # ---- 第 0 级：不在执行白名单内 → 直接拒绝（不询问）----
     if tool_name not in _TOOL_WHITELIST:
-        return _VERDICT_DENY
+        return ctx.deny(f"工具 {tool_name} 不在执行白名单内，已拒绝执行。")
 
     # ---- 第一级：危险操作，直接拒绝 ----
     if tool_name == "bash":
         cmd = _bash_command(arguments)
         if cmd is None:
-            return _VERDICT_ALLOW   # 解析不到 command，交给 run_tool 的正常参数校验
+            return None  # 解析不到 command，交给 run_tool 的正常参数校验
         if _BASH_DENY_RE.search(cmd):
-            return _VERDICT_DENY
+            return ctx.deny(f"命令命中危险规则，已拒绝：{cmd}")
         if _path_in_sysdir(cmd) or _has_dangerous_path(cmd):
-            return _VERDICT_DENY
+            return ctx.deny(f"命令涉及系统关键位置，已拒绝：{cmd}")
 
     elif tool_name in ("read", "write", "edit", "glob"):
         path = _file_path(arguments)
         if path is not None and _path_in_sysdir(path):
-            return _VERDICT_DENY
+            return ctx.deny(f"路径位于系统目录，已拒绝：{path}")
 
     # ---- 第二级：不确定/有破坏性，询问用户 ----
     if tool_name == "bash":
         if not _BASH_ALLOW_RE.match(cmd):
-            return _VERDICT_CONFIRM        # 不在白名单里的 bash 命令都要问
-        return _VERDICT_ALLOW
+            return "confirm"  # 不在白名单里的 bash 命令都要问
+        return None
     if tool_name == "write":
         if _file_exists(arguments):
-            return _VERDICT_CONFIRM        # 覆盖已有文件 -> 问
-        return _VERDICT_ALLOW              # 新建文件 -> 放行
+            return "confirm"  # 覆盖已有文件 -> 问
+        return None           # 新建文件 -> 放行
     if tool_name == "edit":
-        return _VERDICT_CONFIRM            # 修改文件必然有破坏性 -> 问
+        return "confirm"      # 修改文件必然有破坏性 -> 问
     if tool_name == "read":
-        return _VERDICT_ALLOW              # 读文件无害
+        return None           # 读文件无害
     if tool_name == "glob":
-        return _VERDICT_ALLOW              # 查找无害
+        return None           # 查找无害
 
     # 其它工具（如 get_environment）：无害，直接放行
-    return _VERDICT_ALLOW
+    return None
 
 
 def _bash_command(arguments: str) -> str | None:
@@ -571,10 +713,10 @@ def _has_dangerous_path(cmd: str) -> bool:
     ))
 
 
-def _prompt_user(tool_name: str, arguments: str) -> bool:
-    """阻塞等待用户输入，决定是否放行一次"需确认"的调用。"""
-    cmd = _bash_command(arguments) if tool_name == "bash" else _file_path(arguments)
-    print(f"\n[权限] 工具 <{tool_name}> 需要你确认：{cmd}")
+def _prompt_user(ctx: HookContext) -> bool:
+    """阻塞等待用户输入，决定是否放行一次"需确认"的工具调用。"""
+    cmd = _bash_command(ctx.arguments) if ctx.tool_name == "bash" else _file_path(ctx.arguments)
+    print(f"\n[权限] 工具 <{ctx.tool_name}> 需要你确认：{cmd}")
     while True:
         answer = input("      允许执行？(y=允许 / n=拒绝 / 其它=拒绝)：").strip().lower()
         if answer in ("y", "yes"):
@@ -584,39 +726,78 @@ def _prompt_user(tool_name: str, arguments: str) -> bool:
         print("      请输入 y 或 n。")
 
 
-def _describe_verdict(verdict: str, tool_name: str, arguments: str) -> str:
-    """把决策结果格式化为给模型的提示信息。"""
-    if verdict == _VERDICT_DENY:
-        return f"调用被安全策略拒绝（高风险操作）。不允许执行 {tool_name} 参数为 {arguments}。如需执行，请改为询问用户或换一个安全的做法。"
-    if verdict == _VERDICT_CONFIRM:
-        return "用户拒绝了该次操作，请勿重试，向用户说明你无法执行。"
-    return ""
+# ----------------------------------------------------------------------
+# 默认钩子注册：把安全校验等内置行为接入事件系统
+# ----------------------------------------------------------------------
+# 之后新增功能，只要再注册对应事件的回调即可，Loop 主体不再改动。
+hooks.register(HOOK_PRE_TOOL_EXECUTE, _permission_check, priority=-100)
+
+# 示例钩子①：记录"调用工具"到控制台（post_model_response 触发，含工具调用）
+def _on_model_response(ctx: HookContext) -> None:
+    last = ctx.messages[-1]
+    tool_calls = last.get("tool_calls")
+    if tool_calls:
+        for tc in tool_calls:
+            print(f"[钩子] 模型请求调用工具 {tc['function']['name']}")
+    else:
+        print(f"[钩子] 模型给出最终回复 {len(last.get('content') or '')} 字符")
+
+
+hooks.register(HOOK_POST_MODEL_RESPONSE, _on_model_response)
+
+# 示例钩子②：每次工具执行后打印耗时（post_tool_execute 触发）
+def _on_post_tool(ctx: HookContext) -> None:
+    print(f"[钩子] 工具 <{ctx.tool_name}> 执行完毕，返回 {len(ctx.result)} 字符")
+
+
+hooks.register(HOOK_POST_TOOL_EXECUTE, _on_post_tool)
+
+# 示例钩子③：循环结束（STOP）时，输出本次会话累计使用的 token 数量
+def _on_stop_token_summary(ctx: HookContext) -> None:
+    s = ctx.state
+    total = s.get("total_prompt_tokens", 0) + s.get("total_completion_tokens", 0)
+    print(f"[token 汇总] 本次会话共使用 token {total}（输入 {s.get('total_prompt_tokens', 0)} / 输出 {s.get('total_completion_tokens', 0)}）")
+
+
+hooks.register(HOOK_STOP, _on_stop_token_summary)
 
 
 # ----------------------------------------------------------------------
-# Agent Loop 主循环
+# Agent Loop 主循环：逻辑固定，扩展通过钩子完成
 # ----------------------------------------------------------------------
 def agent_loop(user_message: str, max_steps: int = 20) -> None:
     messages: list[dict] = [
         {"role": "system", "content": "你是一个有用的助手。当需要访问本地环境或执行命令时，请调用可用的工具。"},
         {"role": "user", "content": user_message},
     ]
+    ctx = HookContext()
+    ctx.messages = messages
+
+    # 用户输入提交后、首轮请求前
+    hooks.fire(HOOK_USER_PROMPT_SUBMIT, ctx)
 
     for step in range(1, max_steps + 1):
         print(f"\n===== 第 {step} 轮 =====")
         data = chat_completion(messages, tools=registered_tools())
 
         message = data["choices"][0]["message"]
-        # 记录本轮消耗，便于观察
+        # 记录本轮消耗，便于观察，并累加到共享状态
         usage = data.get("usage", {})
         print(f"[tokens] 输入={usage.get('prompt_tokens')} 输出={usage.get('completion_tokens')}")
+        s = ctx.state
+        s["total_prompt_tokens"] = s.get("total_prompt_tokens", 0) + (usage.get("prompt_tokens") or 0)
+        s["total_completion_tokens"] = s.get("total_completion_tokens", 0) + (usage.get("completion_tokens") or 0)
 
         # 把模型的回复（可能含 tool_calls）加入历史
         messages.append(message)
 
+        # 模型每轮响应后（无论是否调用工具）
+        hooks.fire(HOOK_POST_MODEL_RESPONSE, ctx)
+
         # 模型没要求调用工具 → 说明答案已经给全，结束循环
         if not message.get("tool_calls"):
             print(f"\n助手：{message.get('content')}")
+            hooks.fire(HOOK_STOP, ctx)
             return
 
         # 模型要求调用工具 → 逐个执行，并以 tool 角色追加进历史
@@ -625,20 +806,28 @@ def agent_loop(user_message: str, max_steps: int = 20) -> None:
             arguments = tool_call["function"]["arguments"]
             print(f"调用工具 <{tool_name}>，参数：{arguments}")
 
-            # 执行前先过权限校验层
-            verdict = _check_approval(tool_name, arguments)
-            if verdict == _VERDICT_ALLOW:
-                result = run_tool(tool_name, arguments)
-            elif verdict == _VERDICT_CONFIRM:
-                if _prompt_user(tool_name, arguments):
+            ctx.tool_name = tool_name
+            ctx.arguments = arguments
+
+            # 工具执行前：钩子裁决（deny > confirm > allow）
+            hooks.fire_pre_tool(ctx)
+            verdict = ctx.verdict or "allow"
+
+            if verdict == "confirm":
+                if _prompt_user(ctx):
                     result = run_tool(tool_name, arguments)
                 else:
                     result = json.dumps(
                         {"blocked": "用户拒绝了该次操作，请勿重试。"}, ensure_ascii=False)
-            else:  # deny
-                result = json.dumps(
-                    {"blocked": _describe_verdict(verdict, tool_name, arguments)},
-                    ensure_ascii=False)
+            elif verdict == "deny":
+                reason = ctx.deny_reason or "该调用被安全策略拒绝"
+                result = json.dumps({"blocked": reason}, ensure_ascii=False)
+            else:  # allow
+                result = run_tool(tool_name, arguments)
+
+            ctx.result = result
+            # 工具执行后
+            hooks.fire_post_tool(ctx)
 
             messages.append(
                 {
@@ -649,18 +838,18 @@ def agent_loop(user_message: str, max_steps: int = 20) -> None:
             )
 
     print(f"\n已达到最大轮数 {max_steps}，停止循环。")
+    hooks.fire(HOOK_STOP, ctx)
 
 
 # ----------------------------------------------------------------------
 if __name__ == "__main__":
     if not DEEPSEEK_API_KEY:
-        print("未检测到 DEEPSEEK_API_KEY 环境变量。")
-        print("1. 在 https://platform.deepseek.com 创建 API key")
-        print("2. 设置环境变量后重跑，例如（PowerShell）：")
+        print("未检测到 DEEPSEEK_API_KEY。可通过以下任一方式配置：")
+        print("1. 设置环境变量，例如（PowerShell）：")
         print('      $env:DEEPSEEK_API_KEY = "你的key"')
-        print("   或（CMD）：")
-        print("      set DEEPSEEK_API_KEY=你的key")
-        print("   可选：$env:DEEPSEEK_MODEL = \"deepseek-v4-pro\"  # 换更强推理模型")
+        print("2. 在本项目目录创建 .env 文件（推荐，已被 git 忽略）：")
+        print('      DEEPSEEK_API_KEY=你的key')
+        print("   可选在 .env 中配置：DEEPSEEK_MODEL=deepseek-v4-pro")
         raise SystemExit(1)
 
     # # 启动时打印环境诊断，便于人工确认 bash 工具会走哪个后端
