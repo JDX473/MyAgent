@@ -11,3 +11,4 @@ from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）
     _on_stop_token_summary,
     _permission_check,
 )
+from tools.websearch_tool import websearch

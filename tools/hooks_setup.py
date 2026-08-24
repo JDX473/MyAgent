@@ -146,6 +146,8 @@ def _permission_check(ctx: HookContext) -> None | str | tuple[str, str]:
         return None           # 读文件无害
     if tool_name == "glob":
         return None           # 查找无害
+    if tool_name == "websearch":
+        return None           # 受控的联网搜索（只读，走博查 API），放行
 
     # 其它工具（如 get_environment）：无害，直接放行
     return None

@@ -62,11 +62,12 @@ export DEEPSEEK_API_KEY="你的key"
 
 **方式 B：本地 .env 文件（推荐，已被 git 忽略）**
 
-在本项目目录创建 `.env`：
+在本项目目录创建 `.env`（也可直接复制 `.env.example` 填写）：
 
 ```
 DEEPSEEK_API_KEY=你的key
 DEEPSEEK_MODEL=deepseek-v4-pro   # 可选：切换模型（默认 deepseek-v4-flash）
+BOCHA_API_KEY=你的博查key         # 可选：websearch 工具需要（https://open.bocha.cn）
 ```
 
 两者任一即可，同时存在时已设置的环境变量优先。
@@ -91,6 +92,7 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | --- | --- | --- |
 | `DEEPSEEK_API_KEY` | （必填） | DeepSeek API 密钥 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 使用的模型名 |
+| `BOCHA_API_KEY` | （websearch 需要） | 博查搜索 API 密钥（https://open.bocha.cn） |
 
 > ⚠️ 注意：`deepseek-v4-pro` 的 thinking 推理模式**不保证支持函数调用**，
 > 做 Agent Loop 时请使用默认的非思考模式，需要工具调用时不要开启 thinking。
@@ -105,6 +107,7 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `write(path, content)` | 写入/创建文件（自动创建父目录，限工作目录内） |
 | `edit(path, old, new)` | 将文件中第一处 `old` 替换为 `new` |
 | `glob(pattern)` | 按通配符查找文件/目录（支持 `*` `**` `?` `[abc]`，最多返回 100 条） |
+| `websearch(query, count)` | 联网搜索，返回标题/链接/摘要（基于博查 API，需 `BOCHA_API_KEY`） |
 
 ## 如何扩展新工具
 

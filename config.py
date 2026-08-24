@@ -41,5 +41,10 @@ DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 BASE_URL = "https://api.deepseek.com"
 CHAT_URL = f"{BASE_URL}/chat/completions"
 
+# 博查（Bocha）Web Search API —— 为 Agent 提供联网搜索能力
+BOCHA_API_KEY = os.environ.get("BOCHA_API_KEY")
+BOCHA_BASE_URL = os.environ.get("BOCHA_BASE_URL", "https://api.bocha.cn/v1")
+BOCHA_WEB_SEARCH_URL = f"{BOCHA_BASE_URL}/web-search"
+
 # 注意：thinking 思考模式(deepseek-v4-pro 的推理模式)不保证支持函数调用，
 # 做 Agent Loop 用默认的非思考模式即可，需要工具调用时不要开 thinking。

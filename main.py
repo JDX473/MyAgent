@@ -21,10 +21,11 @@ from tools import (  # noqa: F401  触发工具注册 + 默认钩子注册（副
     get_environment,
     glob,
     read,
+    websearch,
     write,
 )
 
-from config import DEEPSEEK_API_KEY
+from config import BOCHA_API_KEY, DEEPSEEK_API_KEY
 
 HELP_TEXT = """可用的交互命令（输入以 / 开头）：
   /exit 或 /quit   退出
@@ -40,6 +41,7 @@ def main() -> None:
         print("2. 在本项目目录创建 .env 文件（推荐，已被 git 忽略）：")
         print('      DEEPSEEK_API_KEY=你的key')
         print("   可选在 .env 中配置：DEEPSEEK_MODEL=deepseek-v4-pro")
+        print("   websearch 工具需要：BOCHA_API_KEY=你的博查key（https://open.bocha.cn）")
         raise SystemExit(1)
 
     print("Agent 已启动，输入 /help 查看命令，输入 /exit 退出。\n")
