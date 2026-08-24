@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Agent Loop —— 基于 DeepSeek 原生 REST API 的最简 ReAct 循环。
+"""Agent —— 基于 DeepSeek 原生 REST API 的最简 ReAct 循环。
 
 入口：先 import config（加载 .env），再 import tools 包（注册工具 + 默认钩子），
-然后启动交互式对话。
+然后启动交互式对话。支持多轮连续对话（跨轮保留历史）。
 
 运行前提：
   设置环境变量 DEEPSEEK_API_KEY（在 https://platform.deepseek.com 申请），
@@ -14,7 +14,7 @@
   python main.py
 """
 import config  # noqa: F401  触发 .env 加载与配置读取
-from core.loop import agent_loop
+from core.loop import AgentSession
 from tools import (  # noqa: F401  触发工具注册 + 默认钩子注册（副作用）
     bash,
     edit,
@@ -25,6 +25,11 @@ from tools import (  # noqa: F401  触发工具注册 + 默认钩子注册（副
 )
 
 from config import DEEPSEEK_API_KEY
+
+HELP_TEXT = """可用的交互命令（输入以 / 开头）：
+  /exit 或 /quit   退出
+  /clear           清空当前会话历史，重新开始
+  /help            显示本帮助"""
 
 
 def main() -> None:
@@ -37,8 +42,36 @@ def main() -> None:
         print("   可选在 .env 中配置：DEEPSEEK_MODEL=deepseek-v4-pro")
         raise SystemExit(1)
 
-    question = input("\n请输入你的问题：\n> ")
-    agent_loop(question)
+    print("Agent 已启动，输入 /help 查看命令，输入 /exit 退出。\n")
+    session = AgentSession()
+
+    while True:
+        try:
+            user_input = input("\n你：> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n再见。")
+            break
+
+        if not user_input:
+            continue
+
+        if user_input.startswith("/"):
+            cmd = user_input.lower()
+            if cmd in ("/exit", "/quit"):
+                print("再见。")
+                break
+            if cmd == "/clear":
+                # 新建会话，丢弃历史（保留当前钩子注册表）
+                session = AgentSession()
+                print("[会话已清空]")
+                continue
+            if cmd == "/help":
+                print(HELP_TEXT)
+                continue
+            print(f"未知命令：{user_input}（输入 /help 查看可用命令）")
+            continue
+
+        session.chat(user_input)
 
 
 if __name__ == "__main__":
