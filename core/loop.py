@@ -14,6 +14,7 @@
   （AGENT_MAX_TOTAL_STEPS 段，默认 3 段；设 0 关闭自动续跑）。
   无活跃计划时，单段预算即硬上限，用尽即停。
 """
+import json
 import os
 
 from core import planner
@@ -37,9 +38,16 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _filtered_tools(allowed: set[str] | None) -> list[dict] | None:
+    """按 allowed 集合过滤工具 schema；None 表示全部。"""
+    if allowed is None:
+        return registered_tools()
+    return [s for s in registered_tools() if s["function"]["name"] in allowed]
+
+
 def _prompt_user(ctx: HookContext) -> bool:
     """阻塞等待用户输入，决定是否放行一次"需确认"的工具调用。"""
-    print(f"\n[权限] 工具 <{ctx.tool_name}> 需要你确认：{ctx.arguments}")
+    print(f"[{ctx.name}][权限] 工具 <{ctx.tool_name}> 需要你确认：{ctx.arguments}")
     while True:
         answer = input("      允许执行？(y=允许 / n=拒绝 / 其它=拒绝)：").strip().lower()
         if answer in ("y", "yes"):
@@ -50,21 +58,35 @@ def _prompt_user(ctx: HookContext) -> bool:
 
 
 class AgentSession:
-    """一次 Agent 会话：可进行多轮对话，历史与状态跨轮保留。"""
+    """一次 Agent 会话：可进行多轮对话，历史与状态跨轮保留。
 
-    def __init__(self, system_prompt: str | None = None) -> None:
+    name：会话名称。主 Agent 默认 "Agent"；subAgent 可传入自定义名
+    （如 "sub1"），使该会话的所有控制台输出带 `[名字]` 前缀，便于区分是谁在干活。
+    """
+
+    def __init__(self, system_prompt: str | None = None, name: str | None = None) -> None:
+        self.name = name or "Agent"
         self.messages: list[dict] = [
             {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
         ]
         self.ctx = HookContext()
         self.ctx.messages = self.messages
+        self.ctx.name = self.name  # 让钩子打印时也能带上会话名
 
-    def chat(self, user_message: str, max_steps: int | None = None) -> str:
+    def _say(self, text: str) -> None:
+        """以 `[名字]` 前缀输出，标明是哪个 Agent 在说话。"""
+        print(f"[{self.name}] {text}")
+
+    def chat(self, user_message: str, max_steps: int | None = None,
+             allowed_tools: set[str] | None = None) -> str:
         """处理一条用户消息，跑完内部 ReAct 循环，返回最终回复文本。
 
         单段预算默认取环境变量 AGENT_MAX_STEPS（默认 20），传参可覆盖。
         计划未完成时自动续跑，直到计划完成或达到总硬上限
         （AGENT_MAX_TOTAL_STEPS 段，默认 3；设 0 关闭自动续跑）。
+
+        allowed_tools：允许本会话调用的工具名集合；None 表示全部工具。
+        用于 subAgent：只把允许的工具 schema 给模型，且分发时再拦一道。
 
         本轮产生的对话历史会保留在 self.messages 中，供后续轮次使用。
         """
@@ -89,19 +111,20 @@ class AgentSession:
         seg_no = 1
 
         while True:
-            print(f"\n=== 执行段 {seg_no}/{max_segments if auto_continue else 1}（单段预算 {segment} 轮）===")
+            self._say(f"=== 执行段 {seg_no}/{max_segments if auto_continue else 1}（单段预算 {segment} 轮）===")
             # 段内循环：跑满单段预算
             for _step in range(1, segment + 1):
                 steps_done += 1
-                print(f"\n===== 第 {steps_done}/{hard_cap} 轮 =====")
+                self._say(f"===== 第 {steps_done}/{hard_cap} 轮 =====")
                 # 每次调用模型前：钩子可注入上下文（如计划快照提醒，防目标漂移）
                 hooks.fire(HookEvents.PRE_MODEL_REQUEST, ctx)
-                data = chat_completion(messages, tools=registered_tools())
+                tools_for_model = _filtered_tools(allowed_tools)
+                data = chat_completion(messages, tools=tools_for_model)
 
                 message = data["choices"][0]["message"]
                 # 记录本轮消耗，便于观察，并累加到共享状态（跨轮累计）
                 usage = data.get("usage", {})
-                print(f"[tokens] 输入={usage.get('prompt_tokens')} 输出={usage.get('completion_tokens')}")
+                self._say(f"[tokens] 输入={usage.get('prompt_tokens')} 输出={usage.get('completion_tokens')}")
                 s = ctx.state
                 s["total_prompt_tokens"] = s.get("total_prompt_tokens", 0) + (usage.get("prompt_tokens") or 0)
                 s["total_completion_tokens"] = s.get("total_completion_tokens", 0) + (usage.get("completion_tokens") or 0)
@@ -115,7 +138,7 @@ class AgentSession:
                 # 模型没要求调用工具 → 说明答案已经给全，结束本轮
                 if not message.get("tool_calls"):
                     answer = message.get("content") or ""
-                    print(f"\n助手：{answer}")
+                    self._say(f"助手：{answer}")
                     hooks.fire(HookEvents.STOP, ctx)
                     return answer
 
@@ -123,12 +146,26 @@ class AgentSession:
                 for tool_call in message["tool_calls"]:
                     tool_name = tool_call["function"]["name"]
                     arguments = tool_call["function"]["arguments"]
-                    print(f"调用工具 <{tool_name}>，参数：{arguments}")
+                    self._say(f"调用工具 <{tool_name}>，参数：{arguments}")
 
                     ctx.tool_name = tool_name
                     ctx.arguments = arguments
                     # 计划工具需要读写 ctx.state：每次执行前绑定当前上下文
                     planner_tools.bind(ctx)
+
+                    # 分发双保险：模型即使绕过 schema 请求了不允许的工具，也拦截
+                    if allowed_tools is not None and tool_name not in allowed_tools:
+                        result = json.dumps(
+                            {"blocked": f"工具 {tool_name} 不在本子会话允许范围内，已拒绝执行。"},
+                            ensure_ascii=False)
+                        ctx.result = result
+                        hooks.fire_post_tool(ctx)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call["id"],
+                            "content": result,
+                        })
+                        continue
 
                     # 工具执行前：钩子裁决（deny > confirm > allow）
                     hooks.fire_pre_tool(ctx)
@@ -168,7 +205,7 @@ class AgentSession:
             if not plan or planner.plan_done(plan):
                 break
 
-            print(f"\n（第 {seg_no} 段预算用尽，任务计划尚未完成，自动续跑）")
+            self._say(f"（第 {seg_no} 段预算用尽，任务计划尚未完成，自动续跑）")
             seg_no += 1
             messages.append({
                 "role": "system",
@@ -176,11 +213,16 @@ class AgentSession:
                             "请基于当前计划继续执行剩余 step，直到计划完成。"),
             })
 
-        print(f"\n已达到总轮数上限 {hard_cap}，停止循环。")
+        # 区分两种结束原因：无计划（单段即上限）vs 计划未完成顶到总硬上限
+        if auto_continue and steps_done >= hard_cap and not planner.plan_done(ctx.state.get("plan")):
+            self._say(f"已达到总轮数上限 {hard_cap}（单段预算用尽且计划未完成），停止循环。")
+        else:
+            self._say(f"本轮预算已用完（{steps_done} 轮），停止循环。")
         hooks.fire(HookEvents.STOP, ctx)
         return last_answer
 
 
-def agent_loop(user_message: str, max_steps: int = 20) -> str:
+def agent_loop(user_message: str, max_steps: int = 20,
+               allowed_tools: set[str] | None = None) -> str:
     """一次性使用：新建会话，跑一条消息，返回最终回复。"""
-    return AgentSession().chat(user_message, max_steps)
+    return AgentSession().chat(user_message, max_steps, allowed_tools=allowed_tools)
