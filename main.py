@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Agent —— 基于 DeepSeek 原生 REST API 的最简 ReAct 循环。
+"""Feidudu —— 基于 DeepSeek 原生 API 的 ReAct Agent。
 
 入口：先 import config（加载 .env），再 import tools 包（注册工具 + 默认钩子），
 然后启动交互式对话。支持多轮连续对话（跨轮保留历史）。
@@ -8,11 +8,11 @@
   设置环境变量 DEEPSEEK_API_KEY（在 https://platform.deepseek.com 申请），
   或在本目录的 .env 文件中配置（两者任一即可，已设置的环境变量优先）。
   可选 DEEPSEEK_MODEL，默认 deepseek-v4-flash。
-  仅用 Python 标准库，无需 pip install 任何东西。
 
 用法：
-  python main.py            # 终端交互模式
-  python main.py --tui      # 聊天式 TUI（需 pip install textual）
+  feidudu                      # 聊天式 TUI（推荐，需 pip install -e . + textual）
+  python main.py               # 终端交互模式
+  python main.py --tui         # 聊天式 TUI
 """
 import argparse
 import sys
@@ -37,7 +37,8 @@ HELP_TEXT = """可用的交互命令（输入以 / 开头）：
   /help            显示本帮助"""
 
 
-def main() -> None:
+def _require_api_key() -> None:
+    """校验 DEEPSEEK_API_KEY，缺失则打印指引并退出。"""
     if not DEEPSEEK_API_KEY:
         print("未检测到 DEEPSEEK_API_KEY。可通过以下任一方式配置：")
         print("1. 设置环境变量，例如（PowerShell）：")
@@ -48,7 +49,18 @@ def main() -> None:
         print("   websearch 工具需要：BOCHA_API_KEY=你的博查key（https://open.bocha.cn）")
         raise SystemExit(1)
 
-    parser = argparse.ArgumentParser(description="Agent Loop")
+
+def run_feidudu() -> None:
+    """`feidudu` 命令入口：启动聊天式 TUI。"""
+    _require_api_key()
+    from chat_tui import run_tui
+    run_tui()
+
+
+def main() -> None:
+    _require_api_key()
+
+    parser = argparse.ArgumentParser(description="Feidudu Agent")
     parser.add_argument("--tui", action="store_true", help="启动聊天式 TUI（需 pip install textual）")
     args = parser.parse_args()
 

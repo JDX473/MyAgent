@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feidudu"
+version = "0.1.0"
+description = "Feidudu —— 基于 DeepSeek 原生 API 的 ReAct Agent（聊天式 TUI）"
+requires-python = ">=3.10"
+
+[project.scripts]
+feidudu = "main:run_feidudu"
+
+[tool.setuptools]
+py-modules = ["main", "config", "chat_tui", "web_server"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "tools*"]

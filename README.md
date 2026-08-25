@@ -79,10 +79,18 @@ BOCHA_API_KEY=你的博查key         # 可选：websearch 工具需要（https:
 
 两者任一即可，同时存在时已设置的环境变量优先。
 
-### 2. 运行
+### 2. 安装为命令（推荐）
 
 ```bash
-python main.py
+pip install -e . textual
+feidudu          # 直接启动聊天式 TUI
+```
+
+### 3. 运行
+
+```bash
+python main.py            # 终端交互模式
+python main.py --tui      # 聊天式 TUI（同 feidudu）
 ```
 
 程序会提示你输入问题，例如：
@@ -91,14 +99,9 @@ python main.py
 > 帮我在 demo 目录下创建一个 readme.txt，内容写上当前系统信息
 ```
 
-### 3. 聊天式 TUI（可选）
+### 4. 聊天式 TUI
 
-如果觉得纯终端不够顺滑，可以用全屏聊天式 TUI（类似 Claude Code 的交互）：
-
-```bash
-pip install textual pillow
-python main.py --tui
-```
+`feidudu` 默认启动全屏聊天式 TUI（类似 Claude Code 的交互），也可以 `python main.py --tui`：
 
 - 底部输入框，回车发送；上方滚动消息区实时展示用户 / Agent / 工具调用 / subAgent 委派
 - **启动时显示 res/feidudu.png 图片 Logo**（Pillow 转 ANSI 真彩色渲染；未装 Pillow 或图片缺失时回退 ASCII 图腾）
@@ -176,8 +179,9 @@ def add(a: int, b: int) -> int:
 
 ```
 MyAgent/
-├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话（--tui 起聊天式界面）
+├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话（feidudu 命令）
 ├── config.py             # .env 加载 + API 常量
+├── pyproject.toml        # 打包配置：声明 feidudu 命令入口
 ├── chat_tui.py           # 聊天式 TUI（textual）
 ├── core/                 # Agent 核心框架
 │   ├── llm.py            # DeepSeek REST 通信（chat_completion）

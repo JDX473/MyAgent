@@ -86,8 +86,38 @@ class TestChatTui(unittest.TestCase):
         self.assertIn("你好！我是 Agent", joined)   # Agent 回复
         self.assertIn("你好", joined)              # 用户消息
 
-    def test_confirm_button_path(self):
-        """模型调 git push（confirm）→ 弹按钮 → 点允许 → Agent 继续。"""
+    def test_scroll_preserved_when_reading_history(self):
+        """向上翻历史时，新内容到达不应把用户拉回底部。"""
+        from chat_tui import ChatApp
+
+        def fake_chat(messages, tools=None):
+            return {"choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+
+        with mock.patch.object(loop_mod, "chat_completion", side_effect=fake_chat):
+            async def go():
+                app = ChatApp()
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    log = app.query_one("#messages")
+                    # 写入足够多行制造滚动
+                    for i in range(60):
+                        log.write(f"line {i} " + "x" * 50)
+                    await pilot.pause()
+                    # 向上翻两行
+                    log.scroll_up()
+                    log.scroll_up()
+                    await pilot.pause()
+                    y_before = log.scroll_offset.y
+                    self.assertFalse(log.is_vertical_scroll_end, "翻后不应在底部")
+                    # 走正式路径写入新内容
+                    app._append_output("NEW CONTENT")
+                    await pilot.pause()
+                    # 不应被拉回底部
+                    self.assertEqual(log.scroll_offset.y, y_before, "翻历史后新内容被拉回底部")
+            asyncio.run(go())
+
+    def _run_confirm(self, respond_fn):
+        """通用：触发 confirm → 用 respond_fn(btn_id/pending) 裁决 → 返回消息区。"""
         calls = [
             {"id": "c1", "type": "function",
              "function": {"name": "bash", "arguments": '{"command": "git push origin main"}'}},
@@ -117,9 +147,7 @@ class TestChatTui(unittest.TestCase):
                         if app._pending_confirm:
                             break
                     self.assertTrue(app._pending_confirm, "confirm 未弹出")
-                    req_id = app._pending_confirm[0][0]
-                    btn = app.query_one(f"#allow-{req_id}")
-                    await pilot.click(btn)
+                    await respond_fn(app, pilot, inp)
                     for _ in range(120):
                         await pilot.pause(); await asyncio.sleep(0.03)
                         if not app._busy:
@@ -127,11 +155,95 @@ class TestChatTui(unittest.TestCase):
                     log = app.query_one("#messages")
                     lines = [str(l) for l in getattr(log, "lines", [])]
                     return lines
-            lines = asyncio.run(go())
+            return asyncio.run(go())
 
-        joined = "\n".join(lines)
+    def test_confirm_button_path(self):
+        """模型调 git push（confirm）→ 弹按钮 → 点允许 → Agent 继续。"""
+        async def click_allow(app, pilot, inp):
+            req_id = app._pending_confirm[0][0]
+            btn = app.query_one(f"#allow-{req_id}")
+            await pilot.click(btn)
+
+        joined = "\n".join(self._run_confirm(click_allow))
         self.assertIn("push 完成", joined)   # 允许后 Agent 继续
         self.assertIn("允许", joined)        # 确认结果被记录
+
+    def test_confirm_keyboard_y(self):
+        """confirm 期间在输入框输 y 回车 → 允许 → Agent 继续。"""
+        async def type_y(app, pilot, inp):
+            inp.value = "y"
+            await pilot.press("enter")
+
+        joined = "\n".join(self._run_confirm(type_y))
+        self.assertIn("push 完成", joined)   # 允许后 Agent 继续
+        self.assertIn("允许", joined)        # 确认结果被记录
+
+    def test_confirm_keyboard_n_denies(self):
+        """confirm 期间输 n 回车 → 拒绝 → 工具被 blocked。"""
+        async def type_n(app, pilot, inp):
+            inp.value = "n"
+            await pilot.press("enter")
+
+        joined = "\n".join(self._run_confirm(type_n))
+        self.assertIn("拒绝", joined)        # 确认结果记录为拒绝
+
+    def test_confirm_click_returns_focus_and_input_works(self):
+        """点击允许后，焦点回到输入框，且能继续输入。"""
+        async def click_allow_then_type(app, pilot, inp):
+            req_id = app._pending_confirm[0][0]
+            btn = app.query_one(f"#allow-{req_id}")
+            await pilot.click(btn)
+            # 等裁决完成（worker 继续）
+            for _ in range(120):
+                await pilot.pause(); await asyncio.sleep(0.03)
+                if not app._busy:
+                    break
+            # 焦点应回到输入框
+            self.assertIs(app.focused, inp, f"焦点未回输入框: {app.focused}")
+            # 输入框可继续输入
+            inp.value = "继续对话"
+            await pilot.press("enter")
+
+        joined = "\n".join(self._run_confirm(click_allow_then_type))
+        self.assertIn("继续对话", joined)    # 点击后输入框能输入并提交
+
+    def test_nested_confirm_orders_fifo(self):
+        """多个待确认项时：界面显示第一个，输入 y/n 裁决第一个，然后自动显示下一个。"""
+        from textual.widgets import Button
+        from chat_tui import ChatApp
+        import threading as _t
+        import uuid
+
+        with mock.patch.object(loop_mod, "chat_completion"):
+            async def go():
+                app = ChatApp()
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    reqA = uuid.uuid4().hex
+                    reqB = uuid.uuid4().hex
+                    app._pending_confirm.append((reqA, _t.Event(), {"allowed": None}))
+                    app._pending_confirm.append((reqB, _t.Event(), {"allowed": None}))
+                    # 渲染第一个 A
+                    app._show_confirm(reqA, "bash", '{"command":"git push"}')
+                    await pilot.pause()
+                    btns = [b.id for b in app.query_one("#confirm").query(Button)]
+                    self.assertIn(f"allow-{reqA}", btns, "界面未显示第一个确认")
+                    # 输入 y 裁决第一个
+                    inp = app.query_one("#input")
+                    inp.focus(); inp.value = "y"; await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(len(app._pending_confirm), 1)
+                    self.assertEqual(app._pending_confirm[0][0], reqB, "裁决的不是第一个")
+                    # 自动显示下一个 B
+                    btns2 = [b.id for b in app.query_one("#confirm").query(Button)]
+                    self.assertIn(f"allow-{reqB}", btns2, "未自动显示下一个")
+                    # 裁决 B，确认框收起
+                    inp.value = "n"; await pilot.press("enter")
+                    await pilot.pause()
+                    self.assertEqual(len(app._pending_confirm), 0)
+                    btns3 = [b.id for b in app.query_one("#confirm").query(Button)]
+                    self.assertEqual(len(btns3), 0, "确认框未收起")
+            asyncio.run(go())
 
 if __name__ == "__main__":
     unittest.main()
