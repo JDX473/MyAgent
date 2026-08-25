@@ -1,7 +1,8 @@
-# Agent Loop — 基于 DeepSeek 原生 API 的最简 ReAct 循环
+# Feidudu — 基于 DeepSeek 原生 API 的 ReAct Agent
 
-一个**零第三方依赖**的 AI Agent 示例：通过调用 DeepSeek 官方原生 REST API
-（不依赖 OpenAI SDK），实现 ReAct（Reason + Act）模式的 Agent 循环骨架。
+一个**零第三方依赖**的 AI Agent：**Feidudu**。
+通过调用 DeepSeek 官方原生 REST API（不依赖 OpenAI SDK），实现 ReAct（Reason + Act）
+模式的 Agent 循环骨架。
 
 模型可以在「直接回答」与「调用工具」之间自主决策：当它决定调用工具时，
 程序在本机执行工具并把结果回传给模型，如此反复，直到模型不再要求调用工具为止。
@@ -90,6 +91,23 @@ python main.py
 > 帮我在 demo 目录下创建一个 readme.txt，内容写上当前系统信息
 ```
 
+### 3. 聊天式 TUI（可选）
+
+如果觉得纯终端不够顺滑，可以用全屏聊天式 TUI（类似 Claude Code 的交互）：
+
+```bash
+pip install textual pillow
+python main.py --tui
+```
+
+- 底部输入框，回车发送；上方滚动消息区实时展示用户 / Agent / 工具调用 / subAgent 委派
+- **启动时显示 res/feidudu.png 图片 Logo**（Pillow 转 ANSI 真彩色渲染；未装 Pillow 或图片缺失时回退 ASCII 图腾）
+- 工具需要权限确认时，输入框上方弹出"允许 / 拒绝"按钮
+- `/exit` 退出，`/clear` 清屏
+
+> TUI 是唯一需要第三方依赖（textual / pillow）的功能；纯终端模式仍保持零依赖。
+> 实现走 `core/output.py` 统一输出通道：终端默认 print，TUI 注入 sink 把输出送进界面，核心行为两者一致。
+
 Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务。
 
 ## 配置
@@ -158,13 +176,17 @@ def add(a: int, b: int) -> int:
 
 ```
 MyAgent/
-├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话
+├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话（--tui 起聊天式界面）
 ├── config.py             # .env 加载 + API 常量
+├── chat_tui.py           # 聊天式 TUI（textual）
 ├── core/                 # Agent 核心框架
 │   ├── llm.py            # DeepSeek REST 通信（chat_completion）
 │   ├── tools.py          # @tool 注册表 + 白名单 + schema + run_tool
 │   ├── hooks.py          # HookContext + HookRegistry + 单例 hooks
 │   ├── planner.py        # 任务计划状态机（纯函数）
+│   ├── output.py         # 统一输出通道（终端 print / TUI 注入）
+│   ├── banner.py         # ASCII 启动横幅（回退用）
+│   ├── logo.py           # 图片版启动 Logo（Pillow 绘制 + ANSI 渲染）
 │   └── loop.py           # agent_loop 主循环（钩子驱动）
 ├── tools/                # 内置工具与钩子
 │   ├── __init__.py       # 统一 import 触发注册
@@ -191,7 +213,9 @@ MyAgent/
 | `core/tools.py` `run_tool()` | 按工具名分发执行，返回 JSON 字符串 |
 | `core/hooks.py` | HookContext / HookRegistry / 事件定义 |
 | `core/planner.py` | 任务计划状态机：五态转移校验、序列化、修订（纯函数） |
+| `core/output.py` | 统一输出通道：终端 print / TUI sink 注入 |
 | `core/loop.py` `agent_loop()` | 主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
+| `chat_tui.py` | 聊天式 TUI：全屏消息流 + 底部输入 + 权限确认按钮 |
 | `tools/bash_tool.py` `bash` | 执行 shell 命令（Git Bash → cmd.exe 回退） |
 | `tools/env_tool.py` `get_environment` | 环境诊断 |
 | `tools/file_tools.py` `read/write/edit/glob` | 文件读写改查（带 `_safe_path` 路径校验） |

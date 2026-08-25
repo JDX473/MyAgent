@@ -277,7 +277,7 @@ class TestAgentSessionName(unittest.TestCase):
 
     def test_default_name_is_agent(self):
         from core.loop import AgentSession
-        self.assertEqual(AgentSession().name, "Agent")
+        self.assertEqual(AgentSession().name, "Feidudu")
 
     def test_custom_name_passed_to_ctx(self):
         from core.loop import AgentSession

@@ -12,6 +12,7 @@
 import json
 import os
 
+from core import output
 from core.tools import _TOOL_WHITELIST, tool
 
 # subAgent 内不可用的工具：4 个计划工具 + subagent 自身（防递归）
@@ -31,7 +32,7 @@ def _subagent_allowed() -> set[str]:
 
 def _summarize(sess, answer: str, allowed: set[str]) -> str:
     """让 subAgent 压缩自己的超长回复；返回压缩后的文本。"""
-    print(f"[{sess.name}] 结果过长（{len(answer)} 字符），让 subAgent 自己总结…")
+    output.emit(f"[{sess.name}] 结果过长（{len(answer)} 字符），让 subAgent 自己总结…")
     try:
         return sess.chat(
             "请将你刚才的完整回复压缩成要点总结，保留所有关键信息与结论，"
@@ -41,7 +42,7 @@ def _summarize(sess, answer: str, allowed: set[str]) -> str:
         )
     except Exception as e:
         # summary 失败不致命：返回原文让上层兜底截断
-        print(f"[{sess.name}] 总结失败：{e}")
+        output.emit(f"[{sess.name}] 总结失败：{e}")
         return answer
 
 
@@ -69,8 +70,8 @@ def subagent(task: str, name: str = "subAgent") -> str:
 
     allowed = _subagent_allowed()
     sess = AgentSession(name=name)
-    print(f"[{name}] ==== 新子会话 · 委派任务 ====")
-    print(f"[{name}] 子任务：{task}")
+    output.emit(f"[{name}] ==== 新子会话 · 委派任务 ====")
+    output.emit(f"[{name}] 子任务：{task}")
 
     try:
         answer = sess.chat(task, max_steps=_SUB_MAX_STEPS, allowed_tools=allowed)
@@ -90,12 +91,12 @@ def subagent(task: str, name: str = "subAgent") -> str:
             break
         summarized = _summarize(sess, answer, allowed)
         if not summarized:
-            print(f"[{name}] 总结返回空，保留原始回复并截断兜底")
+            output.emit(f"[{name}] 总结返回空，保留原始回复并截断兜底")
             break
         answer = summarized
 
     if len(answer) > _RESULT_MAX:
-        print(f"[{name}] 两次总结后仍超长（{len(answer)} 字符），截断兜底")
+        output.emit(f"[{name}] 两次总结后仍超长（{len(answer)} 字符），截断兜底")
         answer = answer[:_RESULT_MAX] + "...(已截断)"
 
     return json.dumps({"result": answer}, ensure_ascii=False)

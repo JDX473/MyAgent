@@ -7,7 +7,7 @@ import json
 import os
 import re
 
-from core import planner
+from core import output, planner
 from core.hooks import HookContext, HookEvents, hooks
 from core.tools import _TOOL_WHITELIST
 
@@ -171,19 +171,19 @@ def _on_model_response(ctx: HookContext) -> None:
     tag = f"[{ctx.name}]"
     if tool_calls:
         for tc in tool_calls:
-            print(f"{tag}[钩子] 模型请求调用工具 {tc['function']['name']}")
+            output.emit(f"{tag}[钩子] 模型请求调用工具 {tc['function']['name']}")
     else:
-        print(f"{tag}[钩子] 模型给出最终回复 {len(last.get('content') or '')} 字符")
+        output.emit(f"{tag}[钩子] 模型给出最终回复 {len(last.get('content') or '')} 字符")
 
 
 def _on_post_tool(ctx: HookContext) -> None:
-    print(f"[{ctx.name}][钩子] 工具 <{ctx.tool_name}> 执行完毕，返回 {len(ctx.result)} 字符")
+    output.emit(f"[{ctx.name}][钩子] 工具 <{ctx.tool_name}> 执行完毕，返回 {len(ctx.result)} 字符")
 
 
 def _on_stop_token_summary(ctx: HookContext) -> None:
     s = ctx.state
     total = s.get("total_prompt_tokens", 0) + s.get("total_completion_tokens", 0)
-    print(f"[{ctx.name}][token 汇总] 本次会话共使用 token {total}（输入 {s.get('total_prompt_tokens', 0)} / 输出 {s.get('total_completion_tokens', 0)}）")
+    output.emit(f"[{ctx.name}][token 汇总] 本次会话共使用 token {total}（输入 {s.get('total_prompt_tokens', 0)} / 输出 {s.get('total_completion_tokens', 0)}）")
 
 
 # ----------------------------------------------------------------------
@@ -258,7 +258,7 @@ def _on_plan_stop_summary(ctx: HookContext) -> None:
         return
     rest = planner.summarize_incomplete(plan)
     if rest:
-        print(f"[{ctx.name}][计划] {rest}")
+        output.emit(f"[{ctx.name}][计划] {rest}")
 
 
 def _on_plan_progress(ctx: HookContext) -> None:
@@ -272,11 +272,11 @@ def _on_plan_progress(ctx: HookContext) -> None:
     plan = ctx.state.get("plan")
     if not plan:
         return
-    print(f"\n[{ctx.name}]--- 当前计划进度 ---")
-    print(planner.serialize_plan(plan))
+    output.emit(f"\n[{ctx.name}]--- 当前计划进度 ---")
+    output.emit(planner.serialize_plan(plan))
     if planner.plan_done(plan):
-        print("（计划已全部完成）")
-    print("--------------------")
+        output.emit("（计划已全部完成）")
+    output.emit("--------------------")
 
 
 

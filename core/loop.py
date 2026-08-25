@@ -17,13 +17,30 @@
 import json
 import os
 
-from core import planner
+from core import output, planner
 from core.hooks import HookContext, HookEvents, hooks
 from core.llm import chat_completion
 from core.tools import registered_tools, run_tool
 from tools import planner_tools
 
-DEFAULT_SYSTEM_PROMPT = "你是一个有用的助手。当需要访问本地环境或执行命令时，请调用可用的工具。"
+# 兜底系统提示词：SOUL.md 缺失时使用
+_FALLBACK_SYSTEM_PROMPT = "你叫 Feidudu，一个智能助手。当需要访问本地环境或执行命令时，请调用可用的工具。"
+
+
+def _load_soul_prompt() -> str:
+    """读取 SOUL.md 作为系统提示词；文件缺失时回退到内置兜底。"""
+    soul_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "SOUL.md")
+    try:
+        with open(soul_path, encoding="utf-8") as f:
+            content = f.read().strip()
+        if content:
+            return content
+    except (OSError, IOError):
+        pass
+    return _FALLBACK_SYSTEM_PROMPT
+
+
+DEFAULT_SYSTEM_PROMPT = _load_soul_prompt()
 
 # 每条用户消息的单段轮数预算（环境变量可调）
 DEFAULT_MAX_STEPS = 20
@@ -38,6 +55,21 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+# 权限确认处理器注入点：TUI / 其它宿主可挂一个非阻塞确认回调
+# （把 confirm 请求交给宿主 UI 展示），缺省走终端 input()。
+_confirm_handler = None
+
+
+def set_confirm_handler(handler) -> None:
+    """设置权限确认处理器（宿主注入）。
+
+    handler(tool_name, arguments) -> bool：需要用户确认时被调用，
+    返回 True=允许 / False=拒绝。None 恢复默认终端 input() 行为。
+    """
+    global _confirm_handler
+    _confirm_handler = handler
+
+
 def _filtered_tools(allowed: set[str] | None) -> list[dict] | None:
     """按 allowed 集合过滤工具 schema；None 表示全部。"""
     if allowed is None:
@@ -46,8 +78,13 @@ def _filtered_tools(allowed: set[str] | None) -> list[dict] | None:
 
 
 def _prompt_user(ctx: HookContext) -> bool:
-    """阻塞等待用户输入，决定是否放行一次"需确认"的工具调用。"""
-    print(f"[{ctx.name}][权限] 工具 <{ctx.tool_name}> 需要你确认：{ctx.arguments}")
+    """阻塞等待用户输入，决定是否放行一次"需确认"的工具调用。
+
+    若已设置 confirm handler（TUI 等宿主），交给它处理；否则终端 input()。
+    """
+    if _confirm_handler is not None:
+        return _confirm_handler(ctx.tool_name, ctx.arguments)
+    output.emit(f"[{ctx.name}][权限] 工具 <{ctx.tool_name}> 需要你确认：{ctx.arguments}")
     while True:
         answer = input("      允许执行？(y=允许 / n=拒绝 / 其它=拒绝)：").strip().lower()
         if answer in ("y", "yes"):
@@ -60,12 +97,12 @@ def _prompt_user(ctx: HookContext) -> bool:
 class AgentSession:
     """一次 Agent 会话：可进行多轮对话，历史与状态跨轮保留。
 
-    name：会话名称。主 Agent 默认 "Agent"；subAgent 可传入自定义名
+    name：会话名称。主 Agent 默认 "Feidudu"；subAgent 可传入自定义名
     （如 "sub1"），使该会话的所有控制台输出带 `[名字]` 前缀，便于区分是谁在干活。
     """
 
     def __init__(self, system_prompt: str | None = None, name: str | None = None) -> None:
-        self.name = name or "Agent"
+        self.name = name or "Feidudu"
         self.messages: list[dict] = [
             {"role": "system", "content": system_prompt or DEFAULT_SYSTEM_PROMPT},
         ]
@@ -75,7 +112,7 @@ class AgentSession:
 
     def _say(self, text: str) -> None:
         """以 `[名字]` 前缀输出，标明是哪个 Agent 在说话。"""
-        print(f"[{self.name}] {text}")
+        output.emit(f"[{self.name}] {text}")
 
     def chat(self, user_message: str, max_steps: int | None = None,
              allowed_tools: set[str] | None = None) -> str:

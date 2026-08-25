@@ -44,7 +44,7 @@ class HookContext:
         self.verdict: str | None = None  # pre 钩子的裁决：allow / confirm / deny
         self.deny_reason: str = ""       # deny 时的原因说明
         self.state: dict = {}            # 任意共享状态（跨钩子、跨轮次）
-        self.name: str = "Agent"         # 所属会话名（subAgent 为自定义名），钩子打印用
+        self.name: str = "Feidudu"          # 所属会话名（subAgent 为自定义名），钩子打印用
 
     def deny(self, reason: str) -> tuple[str, str]:
         """便捷方法：返回 ("deny", reason)。"""

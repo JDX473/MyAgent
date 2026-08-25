@@ -440,7 +440,9 @@ class TestLoopAutoContinue(unittest.TestCase):
         all_content = " ".join(
             m.get("content", "") for msgs in seen for m in msgs if m.get("role") == "system"
         )
-        self.assertNotIn("自动续跑", all_content)
+        # 注入的自动续跑提醒带"（自动续跑）"标记；SOUL.md 系统提示词可能含"自动续跑"字样，
+        # 但不应出现注入标记
+        self.assertNotIn("（自动续跑）", all_content)
 
     def test_auto_continue_hard_cap(self):
         # 一直调用工具（永不结束）：总硬上限 = 单段 × 段数 = 2 × 2 = 4
@@ -472,7 +474,8 @@ class TestLoopAutoContinue(unittest.TestCase):
         all_content = " ".join(
             m.get("content", "") for msgs in seen for m in msgs if m.get("role") == "system"
         )
-        self.assertNotIn("自动续跑", all_content)
+        # 同上：断言不带注入标记"（自动续跑）"
+        self.assertNotIn("（自动续跑）", all_content)
 
 
 if __name__ == "__main__":

@@ -11,8 +11,12 @@
   仅用 Python 标准库，无需 pip install 任何东西。
 
 用法：
-  python main.py
+  python main.py            # 终端交互模式
+  python main.py --tui      # 聊天式 TUI（需 pip install textual）
 """
+import argparse
+import sys
+
 import config  # noqa: F401  触发 .env 加载与配置读取
 from core.loop import AgentSession
 from tools import (  # noqa: F401  触发工具注册 + 默认钩子注册（副作用）
@@ -44,7 +48,18 @@ def main() -> None:
         print("   websearch 工具需要：BOCHA_API_KEY=你的博查key（https://open.bocha.cn）")
         raise SystemExit(1)
 
-    print("Agent 已启动，输入 /help 查看命令，输入 /exit 退出。\n")
+    parser = argparse.ArgumentParser(description="Agent Loop")
+    parser.add_argument("--tui", action="store_true", help="启动聊天式 TUI（需 pip install textual）")
+    args = parser.parse_args()
+
+    if args.tui:
+        from chat_tui import run_tui
+        run_tui()
+        return
+
+    from core.banner import print_banner
+    print_banner()
+    print("Feidudu 已启动，输入 /help 查看命令，输入 /exit 退出。\n")
     session = AgentSession()
 
     while True:
