@@ -14,7 +14,8 @@
 - 🛠 **装饰器式工具注册**：用 `@tool` 一行即可注册新工具，自动生成 JSON Schema
 - 📄 **自动 schema 生成**：根据函数的类型注解（`int/float/str/bool`）与 docstring 自动生成
   `tools` 声明，无需手写 JSON
-- 🖥 **内置 11 个开箱即用的工具**：bash、环境诊断、文件读写改查、联网搜索、任务计划
+- 🖥 **内置 12 个开箱即用的工具**：bash、环境诊断、文件读写改查、联网搜索、任务计划、subAgent 委派
+- 👥 **subAgent 委派**：主 Agent 可把独立子任务委派给嵌套的子会话执行，结果自动压缩，不污染主上下文
 - 🔒 **路径安全限制**：文件工具只允许在工作目录内操作，防止越权访问系统其它位置
 - 📊 **Token 用量打印**：每轮输出输入/输出 token 数，便于观察消耗
 - 🗂 **任务计划与防漂移**：多步任务可拆分为 step 并跟踪状态，长时间未推进计划时自动注入提醒，防止目标漂移
@@ -49,7 +50,7 @@
 
 ## 环境要求
 
-- Python 3.9+（使用了 `list[dict]`、`str | None` 等新式类型注解）
+- Python 3.10+（使用了 `list[dict]`、`str | None` 等新式类型注解，`str | None` 为 PEP 604 语法）
 - 一个 DeepSeek API Key（在 https://platform.deepseek.com 申请）
 - 网络可访问 `https://api.deepseek.com`
 
@@ -106,7 +107,7 @@ python main.py --tui      # 聊天式 TUI（同 feidudu）
 - 底部输入框，回车发送；上方滚动消息区实时展示用户 / Agent / 工具调用 / subAgent 委派
 - **启动时显示 res/feidudu.png 图片 Logo**（Pillow 转 ANSI 真彩色渲染；未装 Pillow 或图片缺失时回退 ASCII 图腾）
 - 工具需要权限确认时，输入框上方弹出"允许 / 拒绝"按钮
-- `/exit` 退出，`/clear` 清屏
+- `/exit` 或 `/quit` 退出，`/clear` 清屏
 
 > TUI 是唯一需要第三方依赖（textual / pillow）的功能；纯终端模式仍保持零依赖。
 > 实现走 `core/output.py` 统一输出通道：终端默认 print，TUI 注入 sink 把输出送进界面，核心行为两者一致。
@@ -120,8 +121,10 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `DEEPSEEK_API_KEY` | （必填） | DeepSeek API 密钥 |
 | `DEEPSEEK_MODEL` | `deepseek-v4-flash` | 使用的模型名 |
 | `BOCHA_API_KEY` | （websearch 需要） | 博查搜索 API 密钥（https://open.bocha.cn） |
+| `BOCHA_BASE_URL` | `https://api.bocha.cn/v1` | 博查 API 地址（一般无需修改） |
 | `AGENT_MAX_STEPS` | `20` | 每条用户消息的单段轮数预算 |
 | `AGENT_MAX_TOTAL_STEPS` | `3` | 自动续跑段数（总硬上限 = 单段预算 × 段数；设 `0` 关闭自动续跑） |
+| `AGENT_DEBUG` | 关闭 | 钩子调用标记调试日志（设 `1` / `true` / `yes` / `on` 开启） |
 
 > ⚠️ 注意：`deepseek-v4-pro` 的 thinking 推理模式**不保证支持函数调用**，
 > 做 Agent Loop 时请使用默认的非思考模式，需要工具调用时不要开启 thinking。
@@ -137,10 +140,25 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `edit(path, old, new)` | 将文件中第一处 `old` 替换为 `new` |
 | `glob(pattern)` | 按通配符查找文件/目录（支持 `*` `**` `?` `[abc]`，最多返回 100 条） |
 | `websearch(query, count)` | 联网搜索，返回标题/链接/摘要（基于博查 API，需 `BOCHA_API_KEY`） |
+| `subagent(task, name)` | 把独立子任务委派给一个嵌套 subAgent 执行，返回压缩后的最终结果 |
 | `plan_task(steps)` | 把多步骤任务拆分为 step 列表，创建/替换当前任务计划 |
 | `update_step(step_index, status, note, reason)` | 更新某个 step 的状态（未执行/执行中/执行完成/执行失败/跳过），系统强制校验转移合法性 |
 | `revise_plan(steps)` | 整体修订计划：新增 / 删除 / 重排 step |
 | `get_plan()` | 查看当前计划各 step 的状态与说明 |
+
+### subAgent 委派
+
+主 Agent 可把**独立、可隔离**的子任务（查询资料、处理单个文件、独立计算等）委派给 subAgent：
+
+- subAgent 内部就是一个 `AgentSession`：复用同一个主循环与同一套全局钩子，
+  权限校验（deny / confirm）在子会话里照样生效。
+- subAgent **不能**使用 4 个计划工具（拆解由主 Agent 做），也**不能**再调用 subAgent，
+  防止无限递归（嵌套深度固定为 1）。
+- subAgent 的中间过程不会污染主上下文，只把最终结果返回给主 Agent。
+- **结果压缩**：结果超过 2000 字符时，先让 subAgent 用自己的模型能力总结（最多 2 次），
+  仍超长才截断兜底，避免截断丢失关键信息。
+- 主 Agent 调用时应给子会话起一个贴合职责的英文小写短横线名字（如 `web-researcher`），
+  该名字会作为该 subAgent 所有控制台输出的前缀。
 
 ### 任务计划与防目标漂移
 
@@ -175,15 +193,24 @@ def add(a: int, b: int) -> int:
 - 参数类型注解 → 自动生成的 `parameters` JSON Schema
 - 在 `run_tool` 中无需任何改动，自动按名称分发
 
+新增工具模块后，在 `tools/__init__.py` 里加一行 import 即可被 Agent 使用。
+
 ## 目录结构
 
 ```
 MyAgent/
 ├── main.py               # 入口：加载 .env → 注册工具/钩子 → 启动对话（feidudu 命令）
 ├── config.py             # .env 加载 + API 常量
-├── pyproject.toml        # 打包配置：声明 feidudu 命令入口
 ├── chat_tui.py           # 聊天式 TUI（textual）
+├── SOUL.md               # 人设系统提示词（Agent 启动时作为 system prompt 注入）
+├── pyproject.toml        # 打包配置：声明 feidudu 命令入口
+├── README.md             # 本文件
+├── .env.example          # 环境变量配置示例（复制为 .env 使用）
+├── .gitignore            # 忽略 __pycache__ / *.pyc / .env / egg-info
+├── res/
+│   └── feidudu.png       # 黄色袋鼠 Logo（TUI 启动时以 ANSI 真彩色渲染）
 ├── core/                 # Agent 核心框架
+│   ├── __init__.py
 │   ├── llm.py            # DeepSeek REST 通信（chat_completion）
 │   ├── tools.py          # @tool 注册表 + 白名单 + schema + run_tool
 │   ├── hooks.py          # HookContext + HookRegistry + 单例 hooks
@@ -191,17 +218,25 @@ MyAgent/
 │   ├── output.py         # 统一输出通道（终端 print / TUI 注入）
 │   ├── banner.py         # ASCII 启动横幅（回退用）
 │   ├── logo.py           # 图片版启动 Logo（Pillow 绘制 + ANSI 渲染）
-│   └── loop.py           # agent_loop 主循环（钩子驱动）
+│   └── loop.py           # agent_loop 主循环 + AgentSession（钩子驱动）
 ├── tools/                # 内置工具与钩子
 │   ├── __init__.py       # 统一 import 触发注册
 │   ├── bash_tool.py      # bash + Git Bash 探测
 │   ├── env_tool.py       # get_environment
 │   ├── file_tools.py     # read/write/edit/glob + _safe_path
 │   ├── planner_tools.py  # plan_task/update_step/revise_plan/get_plan
+│   ├── subagent_tool.py  # subagent（嵌套子会话委派）
 │   ├── websearch_tool.py # websearch（博查 API）
 │   └── hooks_setup.py    # 权限钩子 + 示例钩子 + 计划钩子 + 注册
-├── README.md             # 本文件
-└── .gitignore            # 忽略 __pycache__ / *.pyc / .env
+└── tests/                # 单元测试（pytest）
+    ├── test_file_tools.py
+    ├── test_hooks.py
+    ├── test_llm.py
+    ├── test_permission.py
+    ├── test_planner.py
+    ├── test_subagent.py
+    ├── test_tools.py
+    └── test_chat_tui.py
 ```
 
 > `_WORK_DIR` 即启动脚本时的当前工作目录（`os.getcwd()`），
@@ -215,15 +250,16 @@ MyAgent/
 | `core/tools.py` `@tool` / `_TOOL_REGISTRY` | 装饰器与工具注册表（注册即入白名单） |
 | `core/tools.py` `generate_tool_schema()` | 由函数注解自动生成 tools 声明 |
 | `core/tools.py` `run_tool()` | 按工具名分发执行，返回 JSON 字符串 |
-| `core/hooks.py` | HookContext / HookRegistry / 事件定义 |
+| `core/hooks.py` | HookContext / HookRegistry / 6 个事件定义 |
 | `core/planner.py` | 任务计划状态机：五态转移校验、序列化、修订（纯函数） |
 | `core/output.py` | 统一输出通道：终端 print / TUI sink 注入 |
-| `core/loop.py` `agent_loop()` | 主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
+| `core/loop.py` `AgentSession` / `agent_loop()` | 会话与主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
 | `chat_tui.py` | 聊天式 TUI：全屏消息流 + 底部输入 + 权限确认按钮 |
 | `tools/bash_tool.py` `bash` | 执行 shell 命令（Git Bash → cmd.exe 回退） |
 | `tools/env_tool.py` `get_environment` | 环境诊断 |
 | `tools/file_tools.py` `read/write/edit/glob` | 文件读写改查（带 `_safe_path` 路径校验） |
 | `tools/planner_tools.py` `plan_task` 等 | 计划拆分 / 状态更新 / 修订 / 查询 |
+| `tools/subagent_tool.py` `subagent` | 嵌套子会话：委派独立子任务，超长结果自动总结/截断 |
 | `tools/hooks_setup.py` `_permission_check` | 权限钩子：危险操作 deny / 需确认 confirm / 无害 allow |
 | `main.py` | 环境变量检查 + 交互式输入入口 |
 
