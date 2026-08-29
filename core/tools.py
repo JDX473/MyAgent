@@ -9,10 +9,35 @@
 """
 import inspect
 import json
-from typing import get_type_hints
+from typing import Callable, get_type_hints
 
 _TOOL_REGISTRY: dict[str, callable] = {}
 _TOOL_WHITELIST: set[str] = set()
+
+# 可选注入的"LLM 参数修复器":str -> dict | None。
+# 默认 None(行为与旧版一致);垂直包(如 rcagent)可调用 set_json_repair 装上
+# 更宽容的解析(如 rcagent/stabilization.repair_json),对所有工具生效。
+_json_repair: Callable | None = None
+
+
+def set_json_repair(repair_fn: Callable | None) -> None:
+    """设置/清除参数解析前的 JSON 修复函数(依赖注入,保持 core 与垂直包解耦)。"""
+    global _json_repair
+    _json_repair = repair_fn
+
+
+def _parse_arguments(arguments: str) -> dict | None:
+    """解析模型传来的工具参数 JSON。先直接解析,失败再用修复器兜底。"""
+    if _json_repair is not None:
+        parsed = _json_repair(arguments)
+        if parsed is not None:
+            return parsed
+        return None
+    try:
+        parsed = json.loads(arguments)
+        return parsed if isinstance(parsed, dict) else None
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return None
 
 
 def tool(func=None, *, name: str | None = None):
@@ -106,8 +131,12 @@ def run_tool(name: str, arguments: str) -> str:
     if func is None:
         return json.dumps({"error": f"未注册的工具：{name}"}, ensure_ascii=False)
 
+    args = _parse_arguments(arguments)
+    if args is None:
+        return json.dumps(
+            {"error": "工具参数无法解析为 JSON,请检查参数格式后重试。"}, ensure_ascii=False)
+
     try:
-        args = json.loads(arguments)
         result = func(**args)
         return json.dumps({"result": result}, ensure_ascii=False)
     except TypeError as e:

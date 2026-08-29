@@ -1,0 +1,7 @@
+2026-08-29 09:59:50.010 INFO  org.example.job.ClickStreamJob - Starting ClickStreamJob, job_id=job-99110
+2026-08-29 09:59:52.033 INFO  org.apache.flink.runtime.taskexecutor.TaskManagerRunner - TaskManager connected to JobManager
+2026-08-29 10:00:00.000 INFO  org.example.job.ClickStreamJob - Source started, reading from Kafka topic clicks
+2026-08-29 10:00:05.204 INFO  org.example.job.ClickStreamJob - Window 60s closed, emitted 1204 events
+2026-08-29 10:03:00.000 INFO  org.example.job.ClickStreamJob - Checkpoint 1234 completed
+2026-08-29 10:06:00.000 INFO  org.example.job.ClickStreamJob - Checkpoint 2345 completed
+2026-08-29 10:10:00.000 INFO  org.example.job.ClickStreamJob - Running normally, no anomalies detected

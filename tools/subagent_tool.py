@@ -14,8 +14,13 @@ import os
 
 from core.tools import _TOOL_WHITELIST, tool
 
-# subAgent 内不可用的工具：4 个计划工具 + subagent 自身（防递归）
-_SUBAGENT_EXCLUDED = {"plan_task", "update_step", "revise_plan", "get_plan", "subagent"}
+# subAgent 内不可用的工具：4 个计划工具 + subagent 自身（防递归）。
+# analyze_logs / finalize 属于 RCA 垂直能力，也应排除——防止"专家 Agent 再开
+# 专家 Agent"的无界递归，并保证 finalize(结构化出口)只属于主控制器。
+_SUBAGENT_EXCLUDED = {
+    "plan_task", "update_step", "revise_plan", "get_plan", "subagent",
+    "analyze_logs", "finalize",
+}
 # 结果长度阈值：超过则触发 summary
 _RESULT_MAX = 2000
 # summary 最多尝试次数：之后仍超长才截断

@@ -7,6 +7,11 @@
 
 主循环逻辑固定，扩展通过钩子完成（见 core/hooks.py）。
 
+> 一个有意的最小例外：支持"工具主动终结"。任何工具执行后，若其
+> POST_TOOL_EXECUTE 钩子把 ctx.state['_agent_finished'] 置真（如 RCA 的
+> finalize 报告工具），本轮立即终结、不再续跑。这让"结构化出口"类工具
+> （RCAgent 论文里的 finalize）成为真正的终止点，而非靠模型自觉停。
+
 轮数预算（自动续跑）：
   每条消息先分配"单段预算"（AGENT_MAX_STEPS，默认 20 轮）。
   若任务拆了计划且尚未完成、单段预算用尽，则自动续跑：
@@ -163,7 +168,7 @@ class AgentSession:
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tool_call["id"],
-                            "content": result,
+                            "content": ctx.result,
                         })
                         continue
 
@@ -183,18 +188,29 @@ class AgentSession:
                         result = run_tool(tool_name, arguments)
 
                     ctx.result = result
-                    # 工具执行后
+                    # 工具执行后（钩子可改写 ctx.result，如 OBSK 压缩 / 过早收尾打回；
+                    # 回填 messages 用 ctx.result，让工具结果可被钩子加工）
                     hooks.fire_post_tool(ctx)
 
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_call["id"],  # 必须与 tool_call.id 对应
-                            "content": result,
+                            "content": ctx.result,
                         }
                     )
 
-            # ---- 单段预算用尽：决定是否自动续跑 ----
+                    # 模型通过 finalize 之类的工具主动终结诊断 → 跳出工具分发循环
+                    if ctx.state.get("_agent_finished"):
+                        break
+
+                if ctx.state.get("_agent_finished"):
+                    break  # finalize 终结：跳出段内轮循环
+
+            # ---- 段结束 ----
+            if ctx.state.get("_agent_finished"):
+                break  # finalize 终结：不再自动续跑
+            # 单段预算用尽：决定是否自动续跑
             if not auto_continue:
                 break  # 自动续跑关闭 → 到此为止
             if steps_done >= hard_cap:
@@ -213,8 +229,14 @@ class AgentSession:
                             "请基于当前计划继续执行剩余 step，直到计划完成。"),
             })
 
-        # 区分两种结束原因：无计划（单段即上限）vs 计划未完成顶到总硬上限
-        if auto_continue and steps_done >= hard_cap and not planner.plan_done(ctx.state.get("plan")):
+        # 区分结束原因：finalize 主动终结 / 无计划（单段即上限）/ 计划未完成顶到总硬上限
+        if ctx.state.get("_agent_finished"):
+            self._say("（模型已通过 finalize 主动终结诊断）")
+            report = ctx.state.get("rca_report") or ""
+            if report:
+                self._say(report)
+            last_answer = report
+        elif auto_continue and steps_done >= hard_cap and not planner.plan_done(ctx.state.get("plan")):
             self._say(f"已达到总轮数上限 {hard_cap}（单段预算用尽且计划未完成），停止循环。")
         else:
             self._say(f"本轮预算已用完（{steps_done} 轮），停止循环。")
