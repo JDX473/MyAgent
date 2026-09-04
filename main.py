@@ -21,6 +21,7 @@ from tools import (  # noqa: F401  触发工具注册 + 默认钩子注册（副
     get_environment,
     glob,
     read,
+    search_logs,
     websearch,
     write,
 )

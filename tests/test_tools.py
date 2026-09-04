@@ -69,6 +69,16 @@ class TestSchemaGeneration(unittest.TestCase):
             {"type": "array", "items": {"type": "string"}},
         )
 
+    def test_schema_respects_default_values(self):
+        def f(a: int, b: int = 2, c: str = "x") -> str:
+            """示例"""
+            return str(a + b) + c
+
+        s = tools.generate_tool_schema(f)
+        self.assertEqual(s["function"]["parameters"]["required"], ["a"])
+        self.assertIn("b", s["function"]["parameters"]["properties"])
+        self.assertIn("c", s["function"]["parameters"]["properties"])
+
 
 class TestRunTool(unittest.TestCase):
 

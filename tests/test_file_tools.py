@@ -5,7 +5,6 @@
 import json
 import os
 import shutil
-import tempfile
 import unittest
 
 from tools import file_tools as ft
@@ -16,8 +15,10 @@ class BaseFileToolsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.orig_workdir = ft._WORK_DIR
-        # 每个测试类用独立的临时目录作为沙箱
-        cls.sandbox = tempfile.mkdtemp(prefix="agent_test_")
+        # 每个测试类用独立的工作区内目录作为沙箱
+        cls.sandbox = os.path.join(cls.orig_workdir, ".agent_test_sandbox", cls.__name__)
+        shutil.rmtree(cls.sandbox, ignore_errors=True)
+        os.makedirs(cls.sandbox, exist_ok=True)
         ft._WORK_DIR = cls.sandbox
 
     @classmethod

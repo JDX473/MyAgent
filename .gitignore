@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .env
+.pytest_cache/
+agent_test_*/
+.agent_test_sandbox/

@@ -43,8 +43,13 @@ CHAT_URL = f"{BASE_URL}/chat/completions"
 
 # 博查（Bocha）Web Search API —— 为 Agent 提供联网搜索能力
 BOCHA_API_KEY = os.environ.get("BOCHA_API_KEY")
-BOCHA_BASE_URL = os.environ.get("BOCHA_BASE_URL", "https://api.bocha.cn/v1")
+BOCHA_BASE_URL = (os.environ.get("BOCHA_BASE_URL") or "https://api.bocha.cn/v1").rstrip("/")
 BOCHA_WEB_SEARCH_URL = f"{BOCHA_BASE_URL}/web-search"
+
+# IM 项目日志搜索服务 —— 用于 RCA 根因定位
+IM_LOGSEARCH_BASE_URL = (os.environ.get("IM_LOGSEARCH_BASE_URL") or "http://127.0.0.1:8083").rstrip("/")
+IM_LOGSEARCH_SEARCH_URL = f"{IM_LOGSEARCH_BASE_URL}/api/v1/logs/search"
+IM_LOGSEARCH_HEALTH_URL = f"{IM_LOGSEARCH_BASE_URL}/api/v1/logs/health"
 
 # 注意：thinking 思考模式(deepseek-v4-pro 的推理模式)不保证支持函数调用，
 # 做 Agent Loop 用默认的非思考模式即可，需要工具调用时不要开 thinking。

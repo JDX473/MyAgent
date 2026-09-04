@@ -17,5 +17,6 @@ from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）
     _permission_check,
 )
 from tools.planner_tools import get_plan, plan_task, revise_plan, update_step
+from tools.rca_tools import search_logs
 from tools.subagent_tool import subagent
 from tools.websearch_tool import websearch

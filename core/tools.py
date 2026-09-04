@@ -9,7 +9,8 @@
 """
 import inspect
 import json
-from typing import get_type_hints
+import types
+from typing import Union, get_args, get_origin, get_type_hints
 
 _TOOL_REGISTRY: dict[str, callable] = {}
 _TOOL_WHITELIST: set[str] = set()
@@ -39,13 +40,23 @@ def _type_to_json(t: type) -> str | dict:
     """把 Python 类型映射为 JSON Schema 的类型描述。
 
     返回 str（如 "string"）或 dict（如 {"type": "array", "items": ...}）。
-    支持 int/float/str/bool 及 list[str]；其它类型兜底为 string。
+    支持 int/float/str/bool、list[str] 与 Optional[T]；其它类型兜底为 string。
     """
     if t == list:
         return "string"  # 裸 list（元素类型未知）兜底
-    origin = getattr(t, "__origin__", None)
+    origin = get_origin(t)
     if origin is list:
-        return {"type": "array", "items": {"type": _type_to_json(t.__args__[0])}}
+        args = get_args(t)
+        item_desc = _type_to_json(args[0]) if args else "string"
+        if isinstance(item_desc, dict):
+            item_schema = item_desc
+        else:
+            item_schema = {"type": item_desc}
+        return {"type": "array", "items": item_schema}
+    if origin in (Union, getattr(types, "UnionType", None)):
+        args = [arg for arg in get_args(t) if arg is not type(None)]
+        if len(args) == 1:
+            return _type_to_json(args[0])
     return {
         int: "integer",
         float: "number",
@@ -59,16 +70,24 @@ def generate_tool_schema(func) -> dict:
     hints = get_type_hints(func)
     # 只取参数，排除 'return'（返回值注解不属于入参）
     hints.pop("return", None)
+    signature = inspect.signature(func)
 
     properties = {}
     required = []
-    for param_name, t in hints.items():
+    for param_name, param in signature.parameters.items():
+        if param.kind not in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ):
+            continue
+        t = hints.get(param_name, str)
         type_desc = _type_to_json(t)
         if isinstance(type_desc, dict):
             properties[param_name] = type_desc
         else:
             properties[param_name] = {"type": type_desc}
-        required.append(param_name)
+        if param.default is inspect._empty:
+            required.append(param_name)
 
     description = (inspect.getdoc(func) or "").strip()
 
