@@ -3,6 +3,7 @@
 新增工具模块后，在这里加一行 import 即可被 Agent 使用。
 """
 from tools.bash_tool import bash
+from tools.code_tools import read_code, search_code, search_symbol
 from tools.env_tool import get_environment
 from tools.file_tools import edit, glob, read, write
 from tools.hooks_setup import (  # noqa: F401  默认钩子注册（副作用）

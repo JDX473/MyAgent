@@ -13,7 +13,7 @@
 - 🛠 **装饰器式工具注册**：用 `@tool` 一行即可注册新工具，自动生成 JSON Schema
 - 📄 **自动 schema 生成**：根据函数的类型注解（`int/float/str/bool`）与 docstring 自动生成
   `tools` 声明，无需手写 JSON
-- 🖥 **内置 12 个开箱即用的工具**：bash、环境诊断、文件读写改查、联网搜索、日志检索、任务计划
+- 🖥 **内置 15 个开箱即用的工具**：bash、环境诊断、文件读写改查、代码检查、联网搜索、日志检索、任务计划
 - 🔒 **路径安全限制**：文件工具只允许在工作目录内操作，防止越权访问系统其它位置
 - 📊 **Token 用量打印**：每轮输出输入/输出 token 数，便于观察消耗
 - 🗂 **任务计划与防漂移**：多步任务可拆分为 step 并跟踪状态，长时间未推进计划时自动注入提醒，防止目标漂移
@@ -117,6 +117,9 @@ Agent 会自动决定调用 `write`、`get_environment` 等工具完成该任务
 | `write(path, content)` | 写入/创建文件（自动创建父目录，限工作目录内） |
 | `edit(path, old, new)` | 将文件中第一处 `old` 替换为 `new` |
 | `glob(pattern)` | 按通配符查找文件/目录（支持 `*` `**` `?` `[abc]`，最多返回 100 条） |
+| `search_code(query, path, regex, case_sensitive, limit, context)` | 搜索工作目录内源码/配置/文档文本，返回文件、行号、匹配行与上下文 |
+| `search_symbol(name, path, kind, limit)` | 扫描 Python AST，查找函数/类/顶层常量定义与同名引用 |
+| `read_code(path, start_line, end_line)` | 按 1-based 闭区间读取代码片段，返回带行号的最多 200 行文本 |
 | `websearch(query, count)` | 联网搜索，返回标题/链接/摘要（基于博查 API，需 `BOCHA_API_KEY`） |
 | `search_logs(keyword, time_from, time_to, level, regex, trace_id, conv, limit)` | 直连 IM 项目的日志查询接口（`im-logsearch`） |
 | `plan_task(steps)` | 把多步骤任务拆分为 step 列表，创建/替换当前任务计划 |
@@ -172,6 +175,7 @@ MyAgent/
 ├── tools/                # 内置工具与钩子
 │   ├── __init__.py       # 统一 import 触发注册
 │   ├── bash_tool.py      # bash + Git Bash 探测
+│   ├── code_tools.py     # search_code/search_symbol/read_code 代码检查工具
 │   ├── env_tool.py       # get_environment
 │   ├── file_tools.py     # read/write/edit/glob + _safe_path
 │   ├── planner_tools.py  # plan_task/update_step/revise_plan/get_plan
@@ -197,6 +201,7 @@ MyAgent/
 | `core/planner.py` | 任务计划状态机：五态转移校验、序列化、修订（纯函数） |
 | `core/loop.py` `agent_loop()` | 主循环：对话 → 钩子裁决 → 执行工具 → 回填历史 |
 | `tools/bash_tool.py` `bash` | 执行 shell 命令（Git Bash → cmd.exe 回退） |
+| `tools/code_tools.py` `search_code` 等 | 工作目录内源码搜索、Python 符号检索、代码行片段读取 |
 | `tools/env_tool.py` `get_environment` | 环境诊断 |
 | `tools/file_tools.py` `read/write/edit/glob` | 文件读写改查（带 `_safe_path` 路径校验） |
 | `tools/planner_tools.py` `plan_task` 等 | 计划拆分 / 状态更新 / 修订 / 查询 |

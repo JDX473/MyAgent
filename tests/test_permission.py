@@ -67,6 +67,11 @@ class TestPermissionCheck(unittest.TestCase):
     def test_glob_allow(self):
         self.assertTrue(self._is_allow("glob", {"pattern": "**/*.py"}))
 
+    def test_code_inspection_tools_allow(self):
+        self.assertTrue(self._is_allow("search_code", {"query": "timeout"}))
+        self.assertTrue(self._is_allow("search_symbol", {"name": "handler"}))
+        self.assertTrue(self._is_allow("read_code", {"path": "x.py", "start_line": 1, "end_line": 1}))
+
     def test_env_allow(self):
         self.assertTrue(self._is_allow("get_environment", {}))
 
